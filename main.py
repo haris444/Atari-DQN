@@ -21,6 +21,8 @@ parser.add_argument('--env-name',default="breakout",type=str,choices=["pong","br
 parser.add_argument('--model', default="dqn", type=str, choices=["dqn","dueldqn"], help="dqn model")
 parser.add_argument('--gpu',default=0,type=int,help="which gpu to use")
 #parser.add_argument('--gpu',default="cpu",type=str,help="which device to use")
+parser.add_argument('--algorithm', default="dqn", type=str, choices=["dqn", "expected_sarsa"], help="RL algorithm")
+parser.add_argument('--weighted-is', action='store_true', help="Use weighted importance sampling")
 parser.add_argument('--lr', default=2.5e-4, type=float, help="learning rate")
 parser.add_argument('--epoch', default=10001, type=int, help="training epoch")
 parser.add_argument('--batch-size', default=512, type=int, help="batch size")
@@ -53,13 +55,70 @@ def select_action(state:torch.Tensor)->torch.Tensor:
     eps_threshold = EPS_END + (EPS_START - EPS_END) * \
         math.exp(-1. * steps_done / EPS_DECAY)
     steps_done += 1
+
+    # Calculate action probabilities (epsilon-greedy)
+    action_probs = torch.ones(env.action_space.n, device=args.gpu) * eps_threshold / env.action_space.n
+    
     if sample > eps_threshold:
         with torch.no_grad():
-            return policy_net(state).max(1)[1].view(1, 1)
+            q_values = policy_net(state)
+            best_action = q_values.max(1)[1].view(1, 1)
+            action_probs[best_action] = 1 - eps_threshold + (eps_threshold / env.action_space.n)
+            return best_action, action_probs[best_action]
     else:
-        return torch.tensor([[env.action_space.sample()]]).to(args.gpu)
+        action = torch.tensor([[env.action_space.sample()]], device=args.gpu)
+        return action, action_probs[action]
 
 
+
+    # if sample > eps_threshold:
+    #     with torch.no_grad():
+    #         return policy_net(state).max(1)[1].view(1, 1)
+    # else:
+    #     return torch.tensor([[env.action_space.sample()]]).to(args.gpu)
+
+def expected_sarsa_update(batch, weighted=True):
+    state_batch = torch.cat(batch.state)  # (bs,4,84,84)
+    next_state_batch = torch.cat(batch.next_state)  # (bs,4,84,84)
+    action_batch = torch.cat(batch.action)  # (bs,1)
+    reward_batch = torch.cat(batch.reward).unsqueeze(1)  # (bs,1)
+    done_batch = torch.cat(batch.done).unsqueeze(1)  # (bs,1)
+    action_prob_batch = torch.cat(batch.action_prob).unsqueeze(1)  # (bs,1)
+    
+    # Q(st,a) from policy network
+    state_qvalues = policy_net(state_batch)  # (bs,n_actions)
+    selected_state_qvalue = state_qvalues.gather(1, action_batch)  # (bs,1)
+    
+    # Calculate current policy probabilities for all actions
+    current_probs = torch.ones(state_batch.size(0), env.action_space.n, device=args.gpu) * eps_threshold / env.action_space.n
+    best_actions = state_qvalues.max(1)[1].unsqueeze(1)
+    row_indices = torch.arange(state_batch.size(0), device=args.gpu)
+    current_probs[row_indices, best_actions.squeeze()] = 1 - eps_threshold + (eps_threshold / env.action_space.n)
+    
+    # Calculate importance weights (current policy / behavior policy)
+    importance_weights = current_probs.gather(1, action_batch) / action_prob_batch
+    
+    if weighted:
+        # Normalize weights for weighted importance sampling
+        importance_weights = importance_weights / importance_weights.sum()
+    
+    with torch.no_grad():
+        # Calculate expected value of next state under current policy
+        next_state_qvalues = target_net(next_state_batch)  # (bs,n_actions)
+        
+        # Calculate expected value using current policy probabilities
+        # E[Q(s',a')] = sum_a' π(a'|s') * Q(s',a')
+        expected_qvalues = (next_state_qvalues * current_probs).sum(1).unsqueeze(1)
+        
+        # TD target
+        expected_state_values = expected_qvalues * GAMMA * ~done_batch + reward_batch  # (bs,1)
+    
+    # Apply importance sampling to the loss
+    criterion = nn.SmoothL1Loss(reduction='none')
+    loss_per_sample = criterion(selected_state_qvalue, expected_state_values)
+    loss = (loss_per_sample * importance_weights).sum()
+    
+    return loss
 # environment
 if args.env_name == "pong":
     env = gym.make("PongNoFrameskip-v4")
@@ -176,37 +235,45 @@ for epoch in range(args.epoch):
         # train
         policy_net.train()
         transitions = memory.sample(args.batch_size)
-        batch = Transition(*zip(*transitions)) # batch-array of Transitions -> Transition of batch-arrays.
-        state_batch = torch.cat(batch.state) # (bs,4,84,84)
-        next_state_batch = torch.cat(batch.next_state) # (bs,4,84,84)
-        action_batch = torch.cat(batch.action) # (bs,1)
-        reward_batch = torch.cat(batch.reward).unsqueeze(1) # (bs,1)
-        done_batch = torch.cat(batch.done).unsqueeze(1) #(bs,1)
+        batch = Transition(*zip(*transitions))  # batch-array of Transitions -> Transition of batch-arrays.
 
-        # Q(st,a)
-        state_qvalues = policy_net(state_batch) # (bs,n_actions)
-        selected_state_qvalue = state_qvalues.gather(1,action_batch) # (bs,1)
-        
-        with torch.no_grad():
-            # Q'(st+1,a)
-            next_state_target_qvalues = target_net(next_state_batch) # (bs,n_actions)
-            if args.ddqn:
-                # Q(st+1,a)
-                next_state_qvalues = policy_net(next_state_batch) # (bs,n_actions)
-                # argmax Q(st+1,a)
-                next_state_selected_action = next_state_qvalues.max(1,keepdim=True)[1] # (bs,1)
-                # Q'(st+1,argmax_a Q(st+1,a))
-                next_state_selected_qvalue = next_state_target_qvalues.gather(1,next_state_selected_action) # (bs,1)
-            else:
-                # max_a Q'(st+1,a)
-                next_state_selected_qvalue = next_state_target_qvalues.max(1,keepdim=True)[0] # (bs,1)
+        if args.algorithm == "dqn":
+            # Original DQN update
+            state_batch = torch.cat(batch.state)  # (bs,4,84,84)
+            next_state_batch = torch.cat(batch.next_state)  # (bs,4,84,84)
+            action_batch = torch.cat(batch.action)  # (bs,1)
+            reward_batch = torch.cat(batch.reward).unsqueeze(1)  # (bs,1)
+            done_batch = torch.cat(batch.done).unsqueeze(1)  #(bs,1)
 
-        # td target
-        tdtarget = next_state_selected_qvalue * GAMMA * ~done_batch + reward_batch # (bs,1)
+            # Q(st,a)
+            state_qvalues = policy_net(state_batch)  # (bs,n_actions)
+            selected_state_qvalue = state_qvalues.gather(1, action_batch)  # (bs,1)
+            
+            with torch.no_grad():
+                # Q'(st+1,a)
+                next_state_target_qvalues = target_net(next_state_batch)  # (bs,n_actions)
+                if args.ddqn:
+                    # Q(st+1,a)
+                    next_state_qvalues = policy_net(next_state_batch)  # (bs,n_actions)
+                    # argmax Q(st+1,a)
+                    next_state_selected_action = next_state_qvalues.max(1, keepdim=True)[1]  # (bs,1)
+                    # Q'(st+1,argmax_a Q(st+1,a))
+                    next_state_selected_qvalue = next_state_target_qvalues.gather(1, next_state_selected_action)  # (bs,1)
+                else:
+                    # max_a Q'(st+1,a)
+                    next_state_selected_qvalue = next_state_target_qvalues.max(1, keepdim=True)[0]  # (bs,1)
 
-        # optimize
-        criterion = nn.SmoothL1Loss()
-        loss = criterion(selected_state_qvalue, tdtarget)
+            # td target
+            tdtarget = next_state_selected_qvalue * GAMMA * ~done_batch + reward_batch  # (bs,1)
+
+            # optimize
+            criterion = nn.SmoothL1Loss()
+            loss = criterion(selected_state_qvalue, tdtarget)
+            
+        else:
+            # Expected Sarsa update
+            loss = expected_sarsa_update(batch, weighted=args.weighted_is)
+
         total_loss += loss.item()
         optimizer.zero_grad()
         loss.backward()
