@@ -185,8 +185,9 @@ for epoch in count():
         next_obs = torch.stack((next_obs,obs[0][0],obs[0][1],obs[0][2])).unsqueeze(0) # (1,4,84,84)
         
         # store the transition in memory
-        memory.push(obs,action,next_obs,reward,done)
-        
+        #memory.push(obs,action,next_obs,reward,done)
+        action_prob = torch.tensor([1.0/env.action_space.n], device=args.gpu)  # Uniform probability for random actions
+        memory.push(obs, action, next_obs, reward, done, action_prob)
         # move to next state
         obs = next_obs
 
@@ -215,7 +216,9 @@ for epoch in range(args.epoch):
     # step loop
     for step in count():
         # take one step
-        action = select_action(obs)
+        #action = select_action(obs)
+        action, action_prob = select_action(obs)
+
         next_obs, reward, terminated, truncated, info = env.step(action.item())
         total_reward += reward
         done = terminated or truncated
@@ -227,8 +230,9 @@ for epoch in range(args.epoch):
         next_obs = torch.stack((next_obs,obs[0][0],obs[0][1],obs[0][2])).unsqueeze(0) # (1,4,84,84)
         
         # store the transition in memory
-        memory.push(obs,action,next_obs,reward,done)
-        
+        #memory.push(obs,action,next_obs,reward,done)
+        memory.push(obs, action, next_obs, reward, done, action_prob)
+
         # move to next state
         obs = next_obs
 
