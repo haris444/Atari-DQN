@@ -25,9 +25,11 @@ parser.add_argument('--algorithm', default="dqn", type=str, choices=["dqn", "exp
 parser.add_argument('--weighted-is', action='store_true', help="Use weighted importance sampling")
 parser.add_argument('--lr', default=2.5e-4, type=float, help="learning rate")
 parser.add_argument('--epoch', default=10001, type=int, help="training epoch")
-parser.add_argument('--batch-size', default=512, type=int, help="batch size")
+parser.add_argument('--batch-size', default=32, type=int, help="batch size")
 parser.add_argument('--ddqn',action='store_true', help="double dqn/dueldqn")
 parser.add_argument('--eval-cycle', default=500, type=int, help="evaluation cycle")
+parser.add_argument('--clip-weights', action='store_true', help="Clip importance sampling weights")
+parser.add_argument('--max-weight', default=10.0, type=float, help="Maximum importance sampling weight when clipping")
 args = parser.parse_args()
 
 # some hyperparameters
@@ -79,7 +81,20 @@ def select_action(state:torch.Tensor)->torch.Tensor:
     # else:
     #     return torch.tensor([[env.action_space.sample()]]).to(args.gpu)
 
-def expected_sarsa_update(batch, weighted=True):
+def expected_sarsa_update(batch, weighted=True, clip_weights=True, max_weight=10.0, epsilon=1e-6):
+    """
+    Perform an Expected Sarsa update with importance sampling.
+    
+    Args:
+        batch: A batch of transitions from the replay buffer
+        weighted: Whether to use weighted importance sampling
+        clip_weights: Whether to clip importance weights to prevent extreme values
+        max_weight: Maximum importance weight value when clipping is enabled
+        epsilon: Small value to prevent division by zero
+        
+    Returns:
+        loss: The calculated loss value
+    """
     state_batch = torch.cat(batch.state)  # (bs,4,84,84)
     next_state_batch = torch.cat(batch.next_state)  # (bs,4,84,84)
     action_batch = torch.cat(batch.action)  # (bs,1)
@@ -93,6 +108,8 @@ def expected_sarsa_update(batch, weighted=True):
         action_prob_list.append(prob.view(-1))
     
     action_prob_batch = torch.cat(action_prob_list).unsqueeze(1)  # (bs,1)
+    # Add epsilon to prevent division by zero
+    action_prob_batch = action_prob_batch + epsilon
     
     # Q(st,a) from policy network
     state_qvalues = policy_net(state_batch)  # (bs,n_actions)
@@ -107,9 +124,9 @@ def expected_sarsa_update(batch, weighted=True):
     # Calculate importance weights (current policy / behavior policy)
     importance_weights = current_probs.gather(1, action_batch) / action_prob_batch
     
-    if weighted:
-        # Normalize weights for weighted importance sampling
-        importance_weights = importance_weights / importance_weights.sum()
+    # Optional clipping of importance weights
+    if clip_weights:
+        importance_weights = torch.clamp(importance_weights, max=max_weight)
     
     with torch.no_grad():
         # Calculate expected value of next state under current policy
@@ -125,7 +142,26 @@ def expected_sarsa_update(batch, weighted=True):
     # Apply importance sampling to the loss
     criterion = nn.SmoothL1Loss(reduction='none')
     loss_per_sample = criterion(selected_state_qvalue, expected_state_values)
-    loss = (loss_per_sample * importance_weights).sum()
+    
+    if weighted:
+        # Properly normalize weights for each state separately (group by state)
+        # For batch learning, we use all weights in the batch from the same minibatch update
+        # This is an approximation, as ideally we would group by identical states
+        batch_weights = importance_weights.detach().clone()
+        
+        # Compute the sum of importance weights for normalization (across the batch)
+        # Keep dimensions for proper broadcasting
+        sum_weights = batch_weights.sum()
+        if sum_weights > epsilon:  # Avoid division by zero
+            normalized_weights = batch_weights / sum_weights
+        else:
+            normalized_weights = torch.ones_like(batch_weights) / batch_weights.size(0)
+            
+        # Apply normalized weights to loss
+        loss = (loss_per_sample * normalized_weights).sum()
+    else:
+        # Regular importance sampling (not weighted)
+        loss = (loss_per_sample * importance_weights).mean()
     
     return loss
 # environment
@@ -285,7 +321,12 @@ for epoch in range(args.epoch):
             
         else:
             # Expected Sarsa update
-            loss = expected_sarsa_update(batch, weighted=args.weighted_is)
+            loss = expected_sarsa_update(
+            batch, 
+            weighted=args.weighted_is,
+            clip_weights=args.clip_weights,
+            max_weight=args.max_weight
+)
 
         total_loss += loss.item()
         optimizer.zero_grad()
