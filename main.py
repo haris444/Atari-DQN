@@ -59,15 +59,17 @@ def select_action(state:torch.Tensor)->torch.Tensor:
     # Calculate action probabilities (epsilon-greedy)
     action_probs = torch.ones(env.action_space.n, device=args.gpu) * eps_threshold / env.action_space.n
     
+    # In the select_action function, ensure action_probs are consistently shaped
     if sample > eps_threshold:
         with torch.no_grad():
             q_values = policy_net(state)
             best_action = q_values.max(1)[1].view(1, 1)
-            action_probs[best_action] = 1 - eps_threshold + (eps_threshold / env.action_space.n)
-            return best_action, action_probs[best_action]
+            # Return the probability as a 1D tensor
+            return best_action, action_probs[best_action].view(-1)
     else:
         action = torch.tensor([[env.action_space.sample()]], device=args.gpu)
-        return action, action_probs[action]
+        # Return the probability as a 1D tensor
+        return action, action_probs[action].view(-1)
 
 
 
@@ -83,7 +85,14 @@ def expected_sarsa_update(batch, weighted=True):
     action_batch = torch.cat(batch.action)  # (bs,1)
     reward_batch = torch.cat(batch.reward).unsqueeze(1)  # (bs,1)
     done_batch = torch.cat(batch.done).unsqueeze(1)  # (bs,1)
-    action_prob_batch = torch.cat(batch.action_prob).unsqueeze(1)  # (bs,1)
+    
+    # Make sure all action_prob tensors have the same shape before concatenating
+    action_prob_list = []
+    for prob in batch.action_prob:
+        # Ensure each prob is a 1D tensor
+        action_prob_list.append(prob.view(-1))
+    
+    action_prob_batch = torch.cat(action_prob_list).unsqueeze(1)  # (bs,1)
     
     # Q(st,a) from policy network
     state_qvalues = policy_net(state_batch)  # (bs,n_actions)
