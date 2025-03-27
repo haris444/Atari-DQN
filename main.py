@@ -13,6 +13,68 @@ import os
 import matplotlib.pyplot as plt
 import math
 from collections import deque
+import json
+import glob
+import re
+
+# Functions for saving and loading training state
+def save_training_state(log_dir, epoch, steps_done, eps_threshold, 
+                         rewardList, lossList, avgrewardlist, avglosslist):
+    """
+    Save the current training state to a file
+    """
+    training_state = {
+        'epoch': epoch,
+        'steps_done': steps_done,
+        'eps_threshold': float(eps_threshold),
+        'rewardList': rewardList,
+        'lossList': lossList,
+        'avgrewardlist': avgrewardlist,
+        'avglosslist': avglosslist
+    }
+    
+    # Save to a JSON file
+    with open(os.path.join(log_dir, 'training_state.json'), 'w') as f:
+        json.dump(training_state, f)
+    
+    print(f"Training state saved at epoch {epoch}")
+
+def load_training_state(log_dir):
+    """
+    Load the training state from a file if it exists
+    """
+    state_path = os.path.join(log_dir, 'training_state.json')
+    
+    if not os.path.exists(state_path):
+        return None
+    
+    with open(state_path, 'r') as f:
+        training_state = json.load(f)
+    
+    return training_state
+
+def get_latest_checkpoint(log_dir):
+    """
+    Find the latest model checkpoint and its corresponding epoch
+    """
+    model_files = glob.glob(os.path.join(log_dir, "model*.pth"))
+    if not model_files:
+        return None, 0
+    
+    # Extract epoch numbers from filenames
+    epoch_numbers = []
+    for file in model_files:
+        match = re.search(r'model(\d+)\.pth', file)
+        if match:
+            epoch_numbers.append(int(match.group(1)))
+    
+    if not epoch_numbers:
+        return None, 0
+    
+    latest_epoch = max(epoch_numbers)
+    latest_model = os.path.join(log_dir, f"model{latest_epoch}.pth")
+    
+    return latest_model, latest_epoch
 
 #comment
 # parser
@@ -30,6 +92,7 @@ parser.add_argument('--ddqn',action='store_true', help="double dqn/dueldqn")
 parser.add_argument('--eval-cycle', default=500, type=int, help="evaluation cycle")
 parser.add_argument('--clip-weights', action='store_true', help="Clip importance sampling weights")
 parser.add_argument('--max-weight', default=10.0, type=float, help="Maximum importance sampling weight when clipping")
+parser.add_argument('--log-dir', type=str, help="Directory to save logs and checkpoints (overrides default)")
 args = parser.parse_args()
 
 # some hyperparameters
@@ -180,7 +243,13 @@ if args.ddqn:
     methodname = f"double_{args.model}"
 else:
     methodname = args.model
-log_dir = os.path.join(f"log_{args.env_name}",methodname)
+
+# Use custom log directory if provided
+if args.log_dir:
+    log_dir = args.log_dir
+else:
+    log_dir = os.path.join(f"log_{args.env_name}", methodname)
+
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 log_path = os.path.join(log_dir,"log.txt")
@@ -206,50 +275,84 @@ memory = ReplayMemory(50000)
 # optimizer
 optimizer = optim.AdamW(policy_net.parameters(), lr=args.lr, amsgrad=True)
 
-# warming up
-print("Warming up...")
-warmupstep = 0
-for epoch in count():
-    obs, info = env.reset() # (84,84)
-    obs = torch.from_numpy(obs).to(args.gpu) #(84,84)
-    # stack four frames together, hoping to learn temporal info
-    obs = torch.stack((obs,obs,obs,obs)).unsqueeze(0) #(1,4,84,84)
+# Check for existing checkpoints and load if available
+latest_model_path, checkpoint_epoch = get_latest_checkpoint(log_dir)
+training_state = load_training_state(log_dir)
 
-    # step loop
-    for step in count():
-        warmupstep += 1
-        # take one step
-        action = torch.tensor([[env.action_space.sample()]]).to(args.gpu)
-        next_obs, reward, terminated, truncated, info = env.step(action.item())
-        done = terminated or truncated
-        
-        # convert to tensor
-        reward = torch.tensor([reward],device=args.gpu) # (1)
-        done = torch.tensor([done],device=args.gpu) # (1)
-        next_obs = torch.from_numpy(next_obs).to(args.gpu) # (84,84)
-        next_obs = torch.stack((next_obs,obs[0][0],obs[0][1],obs[0][2])).unsqueeze(0) # (1,4,84,84)
-        
-        # store the transition in memory
-        #memory.push(obs,action,next_obs,reward,done)
-        action_prob = torch.tensor([1.0/env.action_space.n], device=args.gpu)  # Uniform probability for random actions
-        memory.push(obs, action, next_obs, reward, done, action_prob)
-        # move to next state
-        obs = next_obs
-
-        if done:
-            break
-
-    if warmupstep > WARMUP:
-        break
-
+# Initialize lists and variables
 rewardList = []
 lossList = []
 rewarddeq = deque([], maxlen=100)
-lossdeq = deque([],maxlen=100)
+lossdeq = deque([], maxlen=100)
 avgrewardlist = []
 avglosslist = []
+start_epoch = 0
+
+if latest_model_path and training_state:
+    print(f"Resuming from checkpoint: {latest_model_path} (Epoch {checkpoint_epoch})")
+    # Load model
+    device = f"cuda:{args.gpu}" if isinstance(args.gpu, int) else "cpu"
+    loaded_model = torch.load(latest_model_path, map_location=device)
+    policy_net.load_state_dict(loaded_model.state_dict())
+    target_net.load_state_dict(policy_net.state_dict())
+    
+    # Restore training state
+    start_epoch = training_state['epoch'] + 1
+    steps_done = training_state['steps_done']
+    eps_threshold = training_state['eps_threshold']
+    rewardList = training_state['rewardList']
+    lossList = training_state['lossList']
+    avgrewardlist = training_state['avgrewardlist']
+    avglosslist = training_state['avglosslist']
+    
+    # Reinitialize the deques with the correct values
+    rewarddeq = deque(rewardList[-100:] if len(rewardList) >= 100 else rewardList, maxlen=100)
+    lossdeq = deque(lossList[-100:] if len(lossList) >= 100 else lossList, maxlen=100)
+    
+    print(f"Resuming training from epoch {start_epoch}, with {steps_done} total steps")
+    
+    # Skip warmup if resuming training
+    warmupstep = WARMUP + 1
+else:
+    print("Starting training from scratch")
+    # warming up
+    print("Warming up...")
+    warmupstep = 0
+    for epoch in count():
+        obs, info = env.reset() # (84,84)
+        obs = torch.from_numpy(obs).to(args.gpu) #(84,84)
+        # stack four frames together, hoping to learn temporal info
+        obs = torch.stack((obs,obs,obs,obs)).unsqueeze(0) #(1,4,84,84)
+
+        # step loop
+        for step in count():
+            warmupstep += 1
+            # take one step
+            action = torch.tensor([[env.action_space.sample()]]).to(args.gpu)
+            next_obs, reward, terminated, truncated, info = env.step(action.item())
+            done = terminated or truncated
+            
+            # convert to tensor
+            reward = torch.tensor([reward],device=args.gpu) # (1)
+            done = torch.tensor([done],device=args.gpu) # (1)
+            next_obs = torch.from_numpy(next_obs).to(args.gpu) # (84,84)
+            next_obs = torch.stack((next_obs,obs[0][0],obs[0][1],obs[0][2])).unsqueeze(0) # (1,4,84,84)
+            
+            # store the transition in memory
+            #memory.push(obs,action,next_obs,reward,done)
+            action_prob = torch.tensor([1.0/env.action_space.n], device=args.gpu)  # Uniform probability for random actions
+            memory.push(obs, action, next_obs, reward, done, action_prob)
+            # move to next state
+            obs = next_obs
+
+            if done:
+                break
+
+        if warmupstep > WARMUP:
+            break
+
 # epoch loop 
-for epoch in range(args.epoch):
+for epoch in range(start_epoch, args.epoch):
     obs, info = env.reset() # (84,84)
     obs = torch.from_numpy(obs).to(args.gpu) #(84,84)
     # stack four frames together, hoping to learn temporal info
@@ -387,6 +490,11 @@ for epoch in range(args.epoch):
     print(output)
     with open(log_path,"a") as f:
         f.write(f"{output}\n")
+
+    # Save training state periodically
+    if epoch % 10 == 0 or epoch % args.eval_cycle == 0:  # Save every 10 epochs and on evaluation epochs
+        save_training_state(log_dir, epoch, steps_done, eps_threshold, 
+                           rewardList, lossList, avgrewardlist, avglosslist)
 
 env.close()
 
