@@ -17,6 +17,10 @@ import json
 import glob
 import re
 
+# Add this at the top to make your custom classes safe for loading with PyTorch 2.6+
+from torch.serialization import add_safe_globals
+add_safe_globals(['model.DQN', 'model.DuelDQN'])
+
 # Functions for saving and loading training state
 def save_training_state(log_dir, epoch, steps_done, eps_threshold, 
                          rewardList, lossList, avgrewardlist, avglosslist):
@@ -34,10 +38,9 @@ def save_training_state(log_dir, epoch, steps_done, eps_threshold,
     }
     
     # Save to a JSON file
-    with open(os.path.join(log_dir, 'training_state.json'), 'w') as f:
+    state_path = os.path.join(log_dir, 'training_state.json')
+    with open(state_path, 'w') as f:
         json.dump(training_state, f)
-    
-    print(f"Training state saved at epoch {epoch}")
 
 def load_training_state(log_dir):
     """
@@ -76,6 +79,59 @@ def get_latest_checkpoint(log_dir):
     
     return latest_model, latest_epoch
 
+# Function to fill replay memory
+def fill_replay_memory(env, memory, device, min_size, max_size=None):
+    """
+    Fill the replay memory with random actions up to at least min_size
+    
+    Args:
+        env: The environment to interact with
+        memory: The replay memory buffer
+        device: The device to use for tensors
+        min_size: Minimum number of transitions to collect
+        max_size: Maximum number of transitions to collect (optional)
+    """
+    print(f"Filling replay memory with random transitions (minimum {min_size})...")
+    
+    steps = 0
+    while len(memory) < min_size:
+        obs, info = env.reset()
+        obs = torch.from_numpy(obs).to(device)
+        obs = torch.stack((obs, obs, obs, obs)).unsqueeze(0)
+        
+        for step in count():
+            steps += 1
+            # Take random action
+            action = torch.tensor([[env.action_space.sample()]], device=device)
+            next_obs, reward, terminated, truncated, info = env.step(action.item())
+            done = terminated or truncated
+            
+            # Convert to tensors
+            reward = torch.tensor([reward], device=device)
+            done = torch.tensor([done], device=device)
+            next_obs = torch.from_numpy(next_obs).to(device)
+            next_obs = torch.stack((next_obs, obs[0][0], obs[0][1], obs[0][2])).unsqueeze(0)
+            
+            # Store transition with uniform probability
+            action_prob = torch.tensor([1.0/env.action_space.n], device=device)
+            memory.push(obs, action, next_obs, reward, done, action_prob)
+            
+            # Move to next state
+            obs = next_obs
+            
+            # Report progress
+            if steps % 1000 == 0:
+                print(f"  Collected {len(memory)} transitions so far...")
+            
+            # Check if we have enough or reached max
+            if (max_size and len(memory) >= max_size) or len(memory) >= min_size and done:
+                break
+                
+            if done:
+                break
+    
+    print(f"Finished filling replay memory with {len(memory)} transitions")
+
 #comment
 # parser
 parser = argparse.ArgumentParser()
@@ -90,9 +146,11 @@ parser.add_argument('--epoch', default=10001, type=int, help="training epoch")
 parser.add_argument('--batch-size', default=32, type=int, help="batch size")
 parser.add_argument('--ddqn',action='store_true', help="double dqn/dueldqn")
 parser.add_argument('--eval-cycle', default=500, type=int, help="evaluation cycle")
+parser.add_argument('--save-cycle', default=10, type=int, help="save model every X evaluations")
 parser.add_argument('--clip-weights', action='store_true', help="Clip importance sampling weights")
 parser.add_argument('--max-weight', default=10.0, type=float, help="Maximum importance sampling weight when clipping")
 parser.add_argument('--log-dir', type=str, help="Directory to save logs and checkpoints (overrides default)")
+parser.add_argument('--min-replay-size', default=10000, type=int, help="Minimum replay memory size before training")
 args = parser.parse_args()
 
 # some hyperparameters
@@ -135,14 +193,6 @@ def select_action(state:torch.Tensor)->torch.Tensor:
         action = torch.tensor([[env.action_space.sample()]], device=args.gpu)
         # Return the probability as a 1D tensor
         return action, action_probs[action].view(-1)
-
-
-
-    # if sample > eps_threshold:
-    #     with torch.no_grad():
-    #         return policy_net(state).max(1)[1].view(1, 1)
-    # else:
-    #     return torch.tensor([[env.action_space.sample()]]).to(args.gpu)
 
 def expected_sarsa_update(batch, weighted=True, clip_weights=True, max_weight=10.0, epsilon=1e-6):
     """
@@ -227,6 +277,7 @@ def expected_sarsa_update(batch, weighted=True, clip_weights=True, max_weight=10
         loss = (loss_per_sample * importance_weights).mean()
     
     return loss
+
 # environment
 if args.env_name == "pong":
     env = gym.make("PongNoFrameskip-v4")
@@ -253,7 +304,6 @@ else:
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 log_path = os.path.join(log_dir,"log.txt")
-
 
 # video
 video = VideoRecorder(log_dir)
@@ -287,12 +337,27 @@ lossdeq = deque([], maxlen=100)
 avgrewardlist = []
 avglosslist = []
 start_epoch = 0
+eval_counter = 0  # Keep track of evaluation count
 
 if latest_model_path and training_state:
     print(f"Resuming from checkpoint: {latest_model_path} (Epoch {checkpoint_epoch})")
-    # Load model
+    # Load model - modified to handle PyTorch 2.6+ security changes
     device = f"cuda:{args.gpu}" if isinstance(args.gpu, int) else "cpu"
-    loaded_model = torch.load(latest_model_path, map_location=device)
+    try:
+        # First try loading with weights_only=False (which was the default before PyTorch 2.6)
+        loaded_model = torch.load(latest_model_path, map_location=device, weights_only=False)
+        print("Successfully loaded checkpoint")
+    except Exception as e:
+        # If that fails, try to recreate the model architecture and load state_dict
+        if args.model == "dqn":
+            loaded_model = DQN(in_channels=4, n_actions=n_action).to(device)
+        else:
+            loaded_model = DuelDQN(in_channels=4, n_actions=n_action).to(device)
+        
+        # Load just the state dictionary
+        state_dict = torch.load(latest_model_path, map_location=device, weights_only=True)
+        loaded_model.load_state_dict(state_dict)
+    
     policy_net.load_state_dict(loaded_model.state_dict())
     target_net.load_state_dict(policy_net.state_dict())
     
@@ -305,11 +370,19 @@ if latest_model_path and training_state:
     avgrewardlist = training_state['avgrewardlist']
     avglosslist = training_state['avglosslist']
     
+    # Calculate the evaluation counter based on checkpoint epoch
+    eval_counter = checkpoint_epoch // args.eval_cycle
+    
     # Reinitialize the deques with the correct values
     rewarddeq = deque(rewardList[-100:] if len(rewardList) >= 100 else rewardList, maxlen=100)
     lossdeq = deque(lossList[-100:] if len(lossList) >= 100 else lossList, maxlen=100)
     
     print(f"Resuming training from epoch {start_epoch}, with {steps_done} total steps")
+    
+    # Fill replay memory before resuming
+    print("Filling replay memory before resuming training...")
+    min_replay_size = args.min_replay_size  # Use command line arg or default to 10000
+    fill_replay_memory(env, memory, args.gpu, min_replay_size)
     
     # Skip warmup if resuming training
     warmupstep = WARMUP + 1
@@ -339,7 +412,6 @@ else:
             next_obs = torch.stack((next_obs,obs[0][0],obs[0][1],obs[0][2])).unsqueeze(0) # (1,4,84,84)
             
             # store the transition in memory
-            #memory.push(obs,action,next_obs,reward,done)
             action_prob = torch.tensor([1.0/env.action_space.n], device=args.gpu)  # Uniform probability for random actions
             memory.push(obs, action, next_obs, reward, done, action_prob)
             # move to next state
@@ -350,6 +422,11 @@ else:
 
         if warmupstep > WARMUP:
             break
+
+# Check if replay memory is empty or not enough samples
+if len(memory) < args.batch_size:
+    print(f"Replay memory has only {len(memory)} samples, filling to minimum batch size...")
+    fill_replay_memory(env, memory, args.gpu, args.batch_size)
 
 # epoch loop 
 for epoch in range(start_epoch, args.epoch):
@@ -364,7 +441,6 @@ for epoch in range(start_epoch, args.epoch):
     # step loop
     for step in count():
         # take one step
-        #action = select_action(obs)
         action, action_prob = select_action(obs)
 
         next_obs, reward, terminated, truncated, info = env.step(action.item())
@@ -378,7 +454,6 @@ for epoch in range(start_epoch, args.epoch):
         next_obs = torch.stack((next_obs,obs[0][0],obs[0][1],obs[0][2])).unsqueeze(0) # (1,4,84,84)
         
         # store the transition in memory
-        #memory.push(obs,action,next_obs,reward,done)
         memory.push(obs, action, next_obs, reward, done, action_prob)
 
         # move to next state
@@ -386,6 +461,12 @@ for epoch in range(start_epoch, args.epoch):
 
         # train
         policy_net.train()
+        
+        # Double-check there are enough samples in memory before sampling
+        if len(memory) < args.batch_size:
+            print(f"WARNING: Not enough samples in replay memory ({len(memory)}/{args.batch_size}). Collecting more...")
+            break
+            
         transitions = memory.sample(args.batch_size)
         batch = Transition(*zip(*transitions))  # batch-array of Transitions -> Transition of batch-arrays.
 
@@ -425,11 +506,11 @@ for epoch in range(start_epoch, args.epoch):
         else:
             # Expected Sarsa update
             loss = expected_sarsa_update(
-            batch, 
-            weighted=args.weighted_is,
-            clip_weights=args.clip_weights,
-            max_weight=args.max_weight
-)
+                batch, 
+                weighted=args.weighted_is,
+                clip_weights=args.clip_weights,
+                max_weight=args.max_weight
+            )
 
         total_loss += loss.item()
         optimizer.zero_grad()
@@ -444,6 +525,10 @@ for epoch in range(start_epoch, args.epoch):
             # eval
             if epoch % args.eval_cycle == 0:
                 with torch.no_grad():
+                    # Increment evaluation counter
+                    eval_counter += 1
+                    
+                    # Run evaluation
                     video.reset()
                     if args.env_name == "pong":
                         evalenv = gym.make("PongNoFrameskip-v4")
@@ -451,7 +536,7 @@ for epoch in range(start_epoch, args.epoch):
                         evalenv = gym.make("BreakoutNoFrameskip-v4")
                     else:
                         evalenv = gym.make("BoxingNoFrameskip-v4")
-                    evalenv = AtariWrapper(evalenv,video=video)
+                    evalenv = AtariWrapper(evalenv, video=video)
                     obs, info = evalenv.reset()
                     obs = torch.from_numpy(obs).to(args.gpu)
                     obs = torch.stack((obs,obs,obs,obs)).unsqueeze(0)
@@ -473,8 +558,13 @@ for epoch in range(start_epoch, args.epoch):
                                 obs = torch.stack((obs,obs,obs,obs)).unsqueeze(0)
                     evalenv.close()
                     video.save(f"{epoch}.mp4")
-                    torch.save(policy_net, os.path.join(log_dir,f'model{epoch}.pth')) 
-                    print(f"Eval epoch {epoch}: Reward {evalreward}")
+                    
+                    # Only save model every save_cycle evaluations
+                    if eval_counter % args.save_cycle == 0:
+                        torch.save(policy_net, os.path.join(log_dir, f'model{epoch}.pth'))
+                        print(f"Eval #{eval_counter} (epoch {epoch}): Reward {evalreward} - Model saved")
+                    else:
+                        print(f"Eval #{eval_counter} (epoch {epoch}): Reward {evalreward}")
             break
     
     rewardList.append(total_reward)
@@ -497,7 +587,6 @@ for epoch in range(start_epoch, args.epoch):
                            rewardList, lossList, avgrewardlist, avglosslist)
 
 env.close()
-
 
 # plot loss-epoch and reward-epoch
 plt.figure(1)
