@@ -16,7 +16,9 @@ from collections import deque
 import json
 import glob
 import re
-
+# Add this at the top to make your custom classes safe for loading with PyTorch 2.6+
+from torch.serialization import add_safe_globals
+add_safe_globals(['model.DQN', 'model.DuelDQN'])
 # Functions for saving and loading training state
 def save_training_state(log_dir, epoch, steps_done, eps_threshold, 
                          rewardList, lossList, avgrewardlist, avglosslist):
@@ -34,9 +36,9 @@ def save_training_state(log_dir, epoch, steps_done, eps_threshold,
     }
     
     # Save to a JSON file
-    with open(os.path.join(log_dir, 'training_state.json'), 'w') as f:
-        json.dump(training_state, f)
-    
+    # Save to a JSON file
+    state_path = os.path.join(log_dir, 'training_state.json')
+    with open(state_path, 'w') as f:
     print(f"Training state saved at epoch {epoch}")
 #commit
 def load_training_state(log_dir):
@@ -75,6 +77,57 @@ def get_latest_checkpoint(log_dir):
     latest_model = os.path.join(log_dir, f"model{latest_epoch}.pth")
     
     return latest_model, latest_epoch
+def fill_replay_memory(env, memory, device, min_size, max_size=None):
+    """
+    Fill the replay memory with random actions up to at least min_size
+    
+    Args:
+        env: The environment to interact with
+        memory: The replay memory buffer
+        device: The device to use for tensors
+        min_size: Minimum number of transitions to collect
+        max_size: Maximum number of transitions to collect (optional)
+    """
+    print(f"Filling replay memory with random transitions (minimum {min_size})...")
+    
+    steps = 0
+    while len(memory) < min_size:
+        obs, info = env.reset()
+        obs = torch.from_numpy(obs).to(device)
+        obs = torch.stack((obs, obs, obs, obs)).unsqueeze(0)
+        
+        for step in count():
+            steps += 1
+            # Take random action
+            action = torch.tensor([[env.action_space.sample()]], device=device)
+            next_obs, reward, terminated, truncated, info = env.step(action.item())
+            done = terminated or truncated
+            
+            # Convert to tensors
+            reward = torch.tensor([reward], device=device)
+            done = torch.tensor([done], device=device)
+            next_obs = torch.from_numpy(next_obs).to(device)
+            next_obs = torch.stack((next_obs, obs[0][0], obs[0][1], obs[0][2])).unsqueeze(0)
+            
+            # Store transition with uniform probability
+            action_prob = torch.tensor([1.0/env.action_space.n], device=device)
+            memory.push(obs, action, next_obs, reward, done, action_prob)
+            
+            # Move to next state
+            obs = next_obs
+            
+            # Report progress
+            if steps % 1000 == 0:
+                print(f"  Collected {len(memory)} transitions so far...")
+            
+            # Check if we have enough or reached max
+            if (max_size and len(memory) >= max_size) or len(memory) >= min_size and done:
+                break
+                
+            if done:
+                break
+    
+    print(f"Finished filling replay memory with {len(memory)} transitions")
 
 #comment
 # parser
@@ -90,6 +143,9 @@ parser.add_argument('--epoch', default=10001, type=int, help="training epoch")
 parser.add_argument('--batch-size', default=32, type=int, help="batch size")
 parser.add_argument('--ddqn',action='store_true', help="double dqn/dueldqn")
 parser.add_argument('--eval-cycle', default=500, type=int, help="evaluation cycle")
+parser.add_argument('--save-cycle', default=10, type=int, help="save model every X evaluations")
+parser.add_argument('--min-replay-size', default=10000, type=int, help="Minimum replay memory size before training")
+
 parser.add_argument('--clip-weights', action='store_true', help="Clip importance sampling weights")
 parser.add_argument('--max-weight', default=10.0, type=float, help="Maximum importance sampling weight when clipping")
 parser.add_argument('--log-dir', type=str, help="Directory to save logs and checkpoints (overrides default)")
@@ -292,12 +348,28 @@ if latest_model_path and training_state:
     print(f"Resuming from checkpoint: {latest_model_path} (Epoch {checkpoint_epoch})")
     # Load model
     device = f"cuda:{args.gpu}" if isinstance(args.gpu, int) else "cpu"
-    loaded_model = torch.load(latest_model_path, map_location=device)
-    policy_net.load_state_dict(loaded_model.state_dict())
+    try:
+        # First try loading with weights_only=False (which was the default before PyTorch 2.6)
+        loaded_model = torch.load(latest_model_path, map_location=device, weights_only=False)
+        print("Successfully loaded checkpoint")
+    except Exception as e:
+        # If that fails, try to recreate the model architecture and load state_dict
+        if args.model == "dqn":
+            loaded_model = DQN(in_channels=4, n_actions=n_action).to(device)
+        else:
+            loaded_model = DuelDQN(in_channels=4, n_actions=n_action).to(device)
+        
+        # Load just the state dictionary
+        state_dict = torch.load(latest_model_path, map_location=device, weights_only=True)
+        loaded_model.load_state_dict(state_dict)
+        policy_net.load_state_dict(loaded_model.state_dict())
     target_net.load_state_dict(policy_net.state_dict())
     
     # Restore training state
     start_epoch = training_state['epoch'] + 1
+    eval_counter = 0  # Keep track of evaluation count
+    eval_counter = checkpoint_epoch // args.eval_cycle
+
     steps_done = training_state['steps_done']
     eps_threshold = training_state['eps_threshold']
     rewardList = training_state['rewardList']
@@ -310,7 +382,11 @@ if latest_model_path and training_state:
     lossdeq = deque(lossList[-100:] if len(lossList) >= 100 else lossList, maxlen=100)
     
     print(f"Resuming training from epoch {start_epoch}, with {steps_done} total steps")
-    
+        
+    # Fill replay memory before resuming
+    print("Filling replay memory before resuming training...")
+    min_replay_size = args.min_replay_size  # Use command line arg or default to 10000
+    fill_replay_memory(env, memory, args.gpu, min_replay_size)
     # Skip warmup if resuming training
     warmupstep = WARMUP + 1
 else:
