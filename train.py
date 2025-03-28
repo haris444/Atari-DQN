@@ -7,6 +7,7 @@ from evaluation import evaluate_model
 from dqn import dqn_update
 from expected_sarsa import expected_sarsa_update
 from checkpointing import save_training_state
+from utils import Transition
 
 def train(env, policy_net, target_net, memory, optimizer, args, log_dir, 
           video_recorder, start_epoch=0, rewardList=None, lossList=None,
