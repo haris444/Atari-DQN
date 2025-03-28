@@ -130,4 +130,17 @@ def train(env, policy_net, target_net, memory, optimizer, args, log_dir,
         avgrewardlist.append(avgreward)
         
         # Get current exploration parameters
-        steps
+        steps_done, eps_threshold = get_exploration_state()
+        
+        # Log progress
+        output = f"Epoch {epoch}: Loss {total_loss:.2f}, Reward {total_reward}, Avgloss {avgloss:.2f}, Avgreward {avgreward:.2f}, Epsilon {eps_threshold:.2f}, TotalStep {steps_done}"
+        print(output)
+        with open(log_path, "a") as f:
+            f.write(f"{output}\n")
+        
+        # Save training state periodically
+        if epoch % 10 == 0 or epoch % args.eval_cycle == 0:  # Save every 10 epochs and on evaluation epochs
+            save_training_state(log_dir, epoch, steps_done, eps_threshold, 
+                               rewardList, lossList, avgrewardlist, avglosslist)
+    
+    return rewardList, lossList, avgrewardlist, avglosslist
