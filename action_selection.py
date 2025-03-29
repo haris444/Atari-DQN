@@ -40,7 +40,7 @@ def select_action(state, policy_net, env, device, eps_start=1.0, eps_end=0.05, e
         
     Returns:
         action: Selected action shape (1,1)
-        action_prob: Probability of selecting the action as a scalar tensor (1,)
+        action_prob: Probability of selecting the action
     """
     global eps_threshold
     global steps_done
@@ -56,15 +56,12 @@ def select_action(state, policy_net, env, device, eps_start=1.0, eps_end=0.05, e
         with torch.no_grad():
             q_values = policy_net(state)
             best_action = q_values.max(1)[1].view(1, 1)
-            # Get greedy action probability - more likely than others
-            action_prob = torch.tensor([1 - eps_threshold + (eps_threshold / env.action_space.n)], 
-                                     device=device)
-            return best_action, action_prob
+            # Return the probability as a 1D tensor
+            return best_action, action_probs[best_action].view(-1)
     else:
         action = torch.tensor([[env.action_space.sample()]], device=device)
-        # Random action has uniform probability under epsilon-greedy
-        action_prob = torch.tensor([eps_threshold / env.action_space.n], device=device)
-        return action, action_prob
+        # Return the probability as a 1D tensor
+        return action, action_probs[action].view(-1)
 
 def get_exploration_state():
     """Get the current state of exploration parameters"""
