@@ -8,6 +8,7 @@ from dqn import dqn_update
 from expected_sarsa import expected_sarsa_update
 from checkpointing import save_training_state
 from utils import Transition
+from config import  EPS_START, EPS_END, EPS_DECAY
 
 def train(env, policy_net, target_net, memory, optimizer, args, log_dir, 
           video_recorder, start_epoch=0, rewardList=None, lossList=None,
@@ -59,7 +60,7 @@ def train(env, policy_net, target_net, memory, optimizer, args, log_dir,
         # Episode loop
         for step in count():
             # Select action using epsilon-greedy
-            action, action_prob = select_action(obs, policy_net, env, args.gpu)
+            action, action_prob = select_action(obs, policy_net, env, args.gpu,EPS_START, EPS_END, EPS_DECAY)
             
             # Take a step in the environment
             next_obs, reward, terminated, truncated, info = env.step(action.item())
@@ -106,18 +107,20 @@ def train(env, policy_net, target_net, memory, optimizer, args, log_dir,
             loss.backward()
             optimizer.step()
             
-            # Update target network periodically
-            steps_done, _ = get_exploration_state()
-            if steps_done % 1000 == 0:
-                target_net.load_state_dict(policy_net.state_dict())
-            
+
             # End episode when done
             if done:
                 # Run evaluation periodically
                 if epoch % args.eval_cycle == 0:
                     evaluate_model(policy_net, args.env_name, epoch, log_dir, args.gpu, video_recorder)
                 break
+
+        # Update target network periodically
+        steps_done, _ = get_exploration_state()
+        if epoch % target_update_frequency == 0:
+            target_net.load_state_dict(policy_net.state_dict())
         
+
         # Track performance
         rewardList.append(total_reward)
         lossList.append(total_loss)

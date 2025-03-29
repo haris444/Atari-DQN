@@ -18,6 +18,7 @@ def parse_args():
     parser.add_argument('--lr', default=2.5e-4, type=float, help="learning rate")
     parser.add_argument('--epoch', default=10001, type=int, help="training epoch")
     parser.add_argument('--batch-size', default=32, type=int, help="batch size")
+    parser.add_argument('--target-update-episodes', default=10, type=int, help="Update target network every X episodes")
     parser.add_argument('--ddqn', action='store_true', help="double dqn/dueldqn")
     parser.add_argument('--eval-cycle', default=500, type=int, help="evaluation cycle")
     parser.add_argument('--save-cycle', default=10, type=int, help="save model every X evaluations")
