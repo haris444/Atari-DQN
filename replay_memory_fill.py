@@ -33,7 +33,7 @@ def fill_replay_memory(env, memory, device, min_size, max_size=None):
             next_obs = torch.from_numpy(next_obs).to(device)
             next_obs = torch.stack((next_obs, obs[0][0], obs[0][1], obs[0][2])).unsqueeze(0)
             
-            # Store transition with uniform probability
+            # Store transition with uniform probability (consistent format)
             action_prob = torch.tensor([1.0/env.action_space.n], device=device)
             memory.push(obs, action, next_obs, reward, done, action_prob)
             
@@ -84,7 +84,7 @@ def warmup_memory(env, memory, device, warmup_steps):
             next_obs = torch.from_numpy(next_obs).to(device)
             next_obs = torch.stack((next_obs, obs[0][0], obs[0][1], obs[0][2])).unsqueeze(0)
             
-            # store the transition in memory
+            # store the transition in memory with consistent probability format
             action_prob = torch.tensor([1.0/env.action_space.n], device=device)
             memory.push(obs, action, next_obs, reward, done, action_prob)
             

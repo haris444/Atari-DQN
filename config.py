@@ -4,7 +4,7 @@ import argparse
 GAMMA = 0.99  # Discount factor for Bellman equation
 EPS_START = 1  # Initial exploration rate
 EPS_END = 0.05  # Final exploration rate 
-EPS_DECAY = 25000  # Exploration decay rate
+EPS_DECAY = 100000  # Exploration decay rate
 WARMUP = 1000  # Steps before starting updates
 
 def parse_args():

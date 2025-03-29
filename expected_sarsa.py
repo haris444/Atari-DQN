@@ -23,19 +23,15 @@ def expected_sarsa_update(batch, policy_net, target_net, env, eps_threshold,
     Returns:
         loss: The calculated loss value
     """
+    # Extract batch components
     state_batch = torch.cat(batch.state)  # (bs,4,84,84)
     next_state_batch = torch.cat(batch.next_state)  # (bs,4,84,84)
     action_batch = torch.cat(batch.action)  # (bs,1)
     reward_batch = torch.cat(batch.reward).unsqueeze(1)  # (bs,1)
     done_batch = torch.cat(batch.done).unsqueeze(1)  # (bs,1)
     
-    # Make sure all action_prob tensors have the same shape before concatenating
-    action_prob_list = []
-    for prob in batch.action_prob:
-        # Ensure each prob is a 1D tensor
-        action_prob_list.append(prob.view(-1))
-    
-    action_prob_batch = torch.cat(action_prob_list).unsqueeze(1)  # (bs,1)
+    # Get action probabilities as a batch
+    action_prob_batch = torch.cat(batch.action_prob).unsqueeze(1)  # (bs,1)
     # Add epsilon to prevent division by zero
     action_prob_batch = action_prob_batch + epsilon
     
