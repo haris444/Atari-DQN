@@ -5,7 +5,7 @@ def expected_sarsa_update(batch, policy_net, target_net, env, eps_threshold,
                           gamma=0.99, weighted=True, clip_weights=True, 
                           max_weight=10.0, epsilon=1e-6, device=None):
     """
-    Perform an Expected Sarsa update with importance sampling.
+    Perform an Expected Sarsa update with importance sampling, properly normalized by state.
     
     Args:
         batch: A batch of transitions from the replay buffer
@@ -72,21 +72,89 @@ def expected_sarsa_update(batch, policy_net, target_net, env, eps_threshold,
     loss_per_sample = criterion(selected_state_qvalue, expected_state_values)
     
     if weighted:
-        # Properly normalize weights for each state separately (group by state)
-        # For batch learning, we use all weights in the batch from the same minibatch update
-        # This is an approximation, as ideally we would group by identical states
-        batch_weights = importance_weights.detach().clone()
+        # ===== IMPROVED STATE-WISE NORMALIZATION IMPLEMENTATION =====
+        # For high-dimensional states like Atari frames, we need a fingerprinting approach
+        # to identify similar states
         
-        # Compute the sum of importance weights for normalization (across the batch)
-        # Keep dimensions for proper broadcasting
-        sum_weights = batch_weights.sum()
-        if sum_weights > epsilon:  # Avoid division by zero
-            normalized_weights = batch_weights / sum_weights
+        # Create state fingerprints for clustering similar states
+        if state_batch.dim() == 4:  # Image-based states (bs, channels, height, width)
+            # Create a compact representation by:
+            # 1. Downsampling spatial dimensions (average pooling)
+            # 2. Taking channel means to create a spatial pattern fingerprint
+            
+            # Average pooling to reduce dimensionality (84x84 -> 8x8)
+            pooled = torch.nn.functional.avg_pool2d(state_batch, kernel_size=10)
+            
+            # Further compress by taking channel means
+            if pooled.size(1) > 1:  # If multiple channels
+                fingerprints = pooled.mean(dim=1).flatten(1)  # (bs, reduced_h*reduced_w)
+            else:
+                fingerprints = pooled.flatten(1)  # (bs, channels*reduced_h*reduced_w)
         else:
-            normalized_weights = torch.ones_like(batch_weights) / batch_weights.size(0)
+            # For vector states, use the state directly as fingerprint
+            fingerprints = state_batch.detach().clone()
+        
+        # Normalize fingerprints for better clustering (important for cosine similarity)
+        fingerprint_norms = torch.norm(fingerprints, p=2, dim=1, keepdim=True)
+        normalized_fingerprints = fingerprints / (fingerprint_norms + epsilon)
+        
+        # Compute pairwise similarities between state fingerprints
+        # Using cosine similarity which is more robust for high-dimensional data
+        similarities = torch.mm(normalized_fingerprints, normalized_fingerprints.t())  # (bs, bs)
+        
+        # Threshold for considering states as "same cluster"
+        # Higher values = more strict clustering (fewer states per cluster)
+        similarity_threshold = 0.95  # Tunable parameter
+        
+        # Initialize for state grouping
+        batch_size = state_batch.size(0)
+        cluster_indices = -torch.ones(batch_size, dtype=torch.long, device=device)
+        current_cluster = 0
+        
+        # Group states into clusters
+        for i in range(batch_size):
+            if cluster_indices[i] >= 0:
+                continue  # Already assigned to a cluster
+                
+            # Find all states similar to state i
+            similar_states = (similarities[i] >= similarity_threshold).nonzero().squeeze(1)
+            
+            # Assign all similar states to the current cluster
+            cluster_indices[similar_states] = current_cluster
+            current_cluster += 1
+        
+        # Count number of clusters for debugging
+        num_clusters = cluster_indices.max().item() + 1
+        
+        # Normalize weights within each cluster
+        normalized_weights = torch.zeros_like(importance_weights)
+        
+        for cluster_idx in range(num_clusters):
+            # Get indices of states in this cluster
+            cluster_mask = (cluster_indices == cluster_idx)
+            if not cluster_mask.any():
+                continue
+                
+            # Get indices as a list
+            cluster_state_indices = cluster_mask.nonzero().squeeze(1)
+            
+            # Get weights for this state cluster
+            cluster_weights = importance_weights[cluster_state_indices]
+            
+            # Normalize weights within this cluster
+            cluster_sum = cluster_weights.sum()
+            if cluster_sum > epsilon:
+                cluster_normalized = cluster_weights / cluster_sum
+            else:
+                # Fallback to uniform weights if sum is too small
+                cluster_normalized = torch.ones_like(cluster_weights) / cluster_weights.size(0)
+            
+            # Assign normalized weights back
+            normalized_weights[cluster_state_indices] = cluster_normalized
             
         # Apply normalized weights to loss
         loss = (loss_per_sample * normalized_weights).sum()
+        
     else:
         # Regular importance sampling (not weighted)
         loss = (loss_per_sample * importance_weights).mean()
