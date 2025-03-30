@@ -25,12 +25,17 @@ class StickyActionEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
 
     :param env: Environment to wrap
     :param action_repeat_probability: Probability of repeating the last action
+    :param seed: Random seed for reproducibility
     """
 
-    def __init__(self, env: gym.Env, action_repeat_probability: float) -> None:
+    def __init__(self, env: gym.Env, action_repeat_probability: float, seed=None) -> None:
         super().__init__(env)
         self.action_repeat_probability = action_repeat_probability
         assert env.unwrapped.get_action_meanings()[0] == "NOOP"  # type: ignore[attr-defined]
+        
+        # Set seed for the random number generator
+        if seed is not None:
+            self.np_random = np.random.RandomState(seed)
 
     def reset(self, **kwargs) -> AtariResetReturn:
         self._sticky_action = 0  # NOOP
@@ -49,14 +54,20 @@ class NoopResetEnv(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
 
     :param env: Environment to wrap
     :param noop_max: Maximum value of no-ops to run
+    :param seed: Random seed for reproducibility
     """
 
-    def __init__(self, env: gym.Env, noop_max: int = 30) -> None:
+    def __init__(self, env: gym.Env, noop_max: int = 30, seed=None) -> None:
         super().__init__(env)
         self.noop_max = noop_max
         self.override_num_noops = None
         self.noop_action = 0
         assert env.unwrapped.get_action_meanings()[0] == "NOOP"  # type: ignore[attr-defined]
+        
+        # Set seed if provided
+        if seed is not None:
+            self.np_random = np.random.RandomState(seed)
+            env.unwrapped.np_random = self.np_random
 
     def reset(self, **kwargs) -> AtariResetReturn:
         self.env.reset(**kwargs)
@@ -239,90 +250,3 @@ class WarpFrame(gym.ObservationWrapper[np.ndarray, int, np.ndarray]):
             high=255,
             shape=(self.height, self.width, 1),
             dtype=env.observation_space.dtype,  # type: ignore[arg-type]
-        )
-
-    def observation(self, frame: np.ndarray) -> np.ndarray:
-        """
-        returns the current observation from a frame
-
-        :param frame: environment frame
-        :return: the observation shape(84,84) by default
-        """
-        if self.video is not None:
-            self.video.record(frame)
-        return process_image(frame,target_size=(self.width, self.height),normalize=self.normalize)
-
-
-class AtariWrapper(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
-    """
-    Atari 2600 preprocessings
-
-    Specifically:
-
-    * Noop reset: obtain initial state by taking random number of no-ops on reset.
-    * Frame skipping: 4 by default
-    * Max-pooling: most recent two observations
-    * Termination signal when a life is lost.
-    * Resize to a square image: 84x84 by default
-    * Grayscale observation
-    * Clip reward to {-1, 0, 1}
-    * Sticky actions: disabled by default
-    * Normalize the rgb output to [0,1]
-
-    See https://danieltakeshi.github.io/2016/11/25/frame-skipping-and-preprocessing-for-deep-q-networks-on-atari-2600-games/
-    for a visual explanation.
-
-    .. warning::
-        Use this wrapper only with Atari v4 without frame skip: ``env_id = "*NoFrameskip-v4"``.
-
-    :param env: Environment to wrap
-    :param noop_max: Max number of no-ops
-    :param frame_skip: Frequency at which the agent experiences the game.
-        This correspond to repeating the action ``frame_skip`` times.
-    :param screen_size: Resize Atari frame
-    :param terminal_on_life_loss: If True, then step() returns done=True whenever a life is lost.
-    :param clip_reward: If True (default), the reward is clip to {-1, 0, 1} depending on its sign.
-    :param action_repeat_probability: Probability of repeating the last action
-    """
-
-    def __init__(
-        self,
-        env: gym.Env,
-        noop_max: int = 30,
-        frame_skip: int = 4,
-        screen_size: int = 84,
-        terminal_on_life_loss: bool = True,
-        clip_reward: bool = True,
-        action_repeat_probability: float = 0.0,
-        normalize: bool = True,
-        video = None
-    ) -> None:
-        if action_repeat_probability > 0.0:
-            env = StickyActionEnv(env, action_repeat_probability)
-        if noop_max > 0:
-            env = NoopResetEnv(env, noop_max=noop_max)
-        # frame_skip=1 is the same as no frame-skip (action repeat)
-        if frame_skip > 1:
-            env = MaxAndSkipEnv(env, skip=frame_skip)
-        if terminal_on_life_loss:
-            env = EpisodicLifeEnv(env)
-        if "FIRE" in env.unwrapped.get_action_meanings():  # type: ignore[attr-defined]
-            env = FireResetEnv(env)
-        env = WarpFrame(env, width=screen_size, height=screen_size, normalize=normalize,video=video)
-        if clip_reward:
-            env = ClipRewardEnv(env)
-
-        super().__init__(env)
-
-if __name__ == "__main__":
-    env = gym.make("BreakoutNoFrameskip-v4")
-    #print(env.unwrapped.ale.lives())
-    env = AtariWrapper(env)
-    obs, info = env.reset()
-    env.close()
-    for i in range(10000):
-        observation, reward, terminated, truncated, info = env.step(env.action_space.sample())
-        if terminated or truncated:
-            print(env.unwrapped.ale.lives())
-            break
-    # video.save("aaa.mp4")

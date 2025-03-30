@@ -12,7 +12,7 @@ from config import EPS_START, EPS_END, EPS_DECAY
 
 def train(env, policy_net, target_net, memory, optimizer, args, log_dir, 
           video_recorder, start_epoch=0, rewardList=None, lossList=None,
-          avgrewardlist=None, avglosslist=None):
+          avgrewardlist=None, avglosslist=None, seed=None):
     """
     Main training loop for the agent
     
@@ -30,6 +30,7 @@ def train(env, policy_net, target_net, memory, optimizer, args, log_dir,
         lossList: List of losses for each epoch (for resuming training)
         avgrewardlist: List of average rewards (for resuming training)
         avglosslist: List of average losses (for resuming training)
+        seed: Random seed for reproducibility
     """
     # Initialize lists for tracking performance if not provided
     if rewardList is None:
@@ -58,7 +59,13 @@ def train(env, policy_net, target_net, memory, optimizer, args, log_dir,
     
     # Main training loop
     for epoch in range(start_epoch, args.epoch):
-        obs, info = env.reset()
+        # Reset environment with seed if provided (add epoch to avoid same sequence)
+        if seed is not None:
+            episode_seed = seed + epoch
+            obs, info = env.reset(seed=episode_seed)
+        else:
+            obs, info = env.reset()
+            
         obs = torch.from_numpy(obs).to(args.gpu)
         obs = torch.stack((obs, obs, obs, obs)).unsqueeze(0)
         
@@ -67,8 +74,10 @@ def train(env, policy_net, target_net, memory, optimizer, args, log_dir,
         
         # Episode loop
         for step in count():
-            # Select action using epsilon-greedy
-            action, action_prob = select_action(obs, policy_net, env, args.gpu, EPS_START, EPS_END, EPS_DECAY)
+            # Select action using epsilon-greedy with seed
+            action, action_prob = select_action(obs, policy_net, env, args.gpu, 
+                                               EPS_START, EPS_END, EPS_DECAY, 
+                                               seed=(seed + epoch + step if seed is not None else None))
             
             # Take a step in the environment
             next_obs, reward, terminated, truncated, info = env.step(action.item())
@@ -162,10 +171,11 @@ def train(env, policy_net, target_net, memory, optimizer, args, log_dir,
                 video_recorder.dir_name = video_dir
                 current_video_recorder = video_recorder
             
-            # Perform multiple evaluation runs
+            # Perform multiple evaluation runs with seed
             avg_reward, std_reward, rewards = evaluate_model_multiple_runs(
                 policy_net, args.env_name, epoch, log_dir, args.gpu, 
-                num_runs=eval_runs, video_recorder=current_video_recorder
+                num_runs=eval_runs, video_recorder=current_video_recorder,
+                seed=(seed + 10000 + epoch if seed is not None else None)  # Use a different seed range for evaluation
             )
             
             # Update evaluation data and plot results

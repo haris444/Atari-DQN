@@ -6,6 +6,7 @@ EPS_START = 1  # Initial exploration rate
 EPS_END = 0.05  # Final exploration rate 
 EPS_DECAY = 100000  # Exploration decay rate
 WARMUP = 1000  # Steps before starting updates
+DEFAULT_SEED = 42  # Default random seed
 
 def parse_args():
     """Parse command line arguments and return args object"""
@@ -26,5 +27,7 @@ def parse_args():
     parser.add_argument('--clip-weights', action='store_true', help="Clip importance sampling weights")
     parser.add_argument('--max-weight', default=10.0, type=float, help="Maximum importance sampling weight when clipping")
     parser.add_argument('--log-dir', type=str, help="Directory to save logs and checkpoints (overrides default)")
+    parser.add_argument('--seed', default=DEFAULT_SEED, type=int, help="Random seed for reproducibility")
+    parser.add_argument('--deterministic', action='store_true', help="Enable deterministic behavior in PyTorch")
     
     return parser.parse_args()

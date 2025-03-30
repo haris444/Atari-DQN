@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from itertools import count
 from wrapper import AtariWrapper
 
-def evaluate_model_multiple_runs(policy_net, env_name, epoch, log_dir, device, num_runs=3, video_recorder=None):
+def evaluate_model_multiple_runs(policy_net, env_name, epoch, log_dir, device, num_runs=3, video_recorder=None, seed=None):
     """
     Evaluates the policy network multiple times on an environment and returns the average reward.
     
@@ -18,6 +18,7 @@ def evaluate_model_multiple_runs(policy_net, env_name, epoch, log_dir, device, n
         device: Device to use for tensor operations
         num_runs: Number of evaluation runs to perform
         video_recorder: Optional video recorder object (will record only the first run)
+        seed: Random seed for reproducibility
         
     Returns:
         avg_reward: Average reward across all evaluation runs
@@ -29,7 +30,13 @@ def evaluate_model_multiple_runs(policy_net, env_name, epoch, log_dir, device, n
     for run in range(num_runs):
         # Only use video recorder for the first run
         run_video = video_recorder if run == 0 else None
-        reward = evaluate_model(policy_net, env_name, epoch, log_dir, device, run_video)
+        
+        # Generate a unique seed for each evaluation run if seed is provided
+        eval_seed = None
+        if seed is not None:
+            eval_seed = seed + run
+            
+        reward = evaluate_model(policy_net, env_name, epoch, log_dir, device, run_video, seed=eval_seed)
         rewards.append(reward)
     
     avg_reward = np.mean(rewards)
@@ -39,7 +46,7 @@ def evaluate_model_multiple_runs(policy_net, env_name, epoch, log_dir, device, n
     
     return avg_reward, std_reward, rewards
 
-def evaluate_model(policy_net, env_name, epoch, log_dir, device, video_recorder=None):
+def evaluate_model(policy_net, env_name, epoch, log_dir, device, video_recorder=None, seed=None):
     """
     Evaluate the policy network on the environment and optionally record video
     
@@ -50,6 +57,7 @@ def evaluate_model(policy_net, env_name, epoch, log_dir, device, video_recorder=
         log_dir: Directory to save evaluation results
         device: Device to use for tensor operations
         video_recorder: Optional video recorder object
+        seed: Random seed for reproducibility
         
     Returns:
         evalreward: Total reward obtained during evaluation
@@ -71,12 +79,20 @@ def evaluate_model(policy_net, env_name, epoch, log_dir, device, video_recorder=
             evalenv = gym.make("MsPacmanNoFrameskip-v4")
         else:
             evalenv = gym.make("BoxingNoFrameskip-v4")
+        
+        # Set the environment seed if provided
+        if seed is not None:
+            evalenv.action_space.seed(seed)
             
         # Wrap environment and enable video recording if recorder is provided
-        evalenv = AtariWrapper(evalenv, video=video_recorder)
+        evalenv = AtariWrapper(evalenv, video=video_recorder, seed=seed)
         
         # Initialize environment
-        obs, info = evalenv.reset()
+        if seed is not None:
+            obs, info = evalenv.reset(seed=seed)
+        else:
+            obs, info = evalenv.reset()
+            
         obs = torch.from_numpy(obs).to(device)
         obs = torch.stack((obs, obs, obs, obs)).unsqueeze(0)
         
@@ -97,7 +113,10 @@ def evaluate_model(policy_net, env_name, epoch, log_dir, device, video_recorder=
                 if info["lives"] == 0:  # real end
                     break
                 else:
-                    obs, info = evalenv.reset()
+                    if seed is not None:
+                        obs, info = evalenv.reset(seed=seed)
+                    else:
+                        obs, info = evalenv.reset()
                     obs = torch.from_numpy(obs).to(device)
                     obs = torch.stack((obs, obs, obs, obs)).unsqueeze(0)
                     

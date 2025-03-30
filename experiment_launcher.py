@@ -6,16 +6,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import torch
 import random
-
-def set_seed(seed):
-    """Set random seed for reproducibility"""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    os.environ['PYTHONHASHSEED'] = str(seed)
+from seed_utils import set_seed
 
 def run_experiment(args, seed):
     """Run a single experiment with a specific seed"""
@@ -39,6 +30,7 @@ def run_experiment(args, seed):
         "--batch-size", str(args.batch_size),
         "--target-update-episodes", str(args.target_update),
         "--log-dir", run_dir,
+        "--seed", str(seed)
     ]
     
     # Add optional flags
@@ -48,6 +40,8 @@ def run_experiment(args, seed):
         cmd.append("--weighted-is")
     if args.clip_weights:
         cmd.append("--clip-weights")
+    if args.deterministic:
+        cmd.append("--deterministic")
         
     # Add max-weight if specified
     if hasattr(args, 'max_weight'):
@@ -62,7 +56,7 @@ def run_experiment(args, seed):
     print(f"Command: {' '.join(cmd)}")
     
     # Set the seed explicitly before running
-    set_seed(seed)
+    set_seed(seed, deterministic=args.deterministic)
     
     process = subprocess.Popen(cmd, env=env)
     process.wait()
@@ -163,6 +157,8 @@ def main():
     # Experiment configuration
     parser.add_argument('--seeds', type=int, default=5, help='Number of seeds to run')
     parser.add_argument('--exp-dir', type=str, default='experiments', help='Directory to store all experiments')
+    parser.add_argument('--base-seed', type=int, default=42, help='Base random seed (will be incremented for each run)')
+    parser.add_argument('--deterministic', action='store_true', help='Use deterministic algorithms in PyTorch')
     
     # Game selection
     parser.add_argument('--env-name', type=str, default='breakout', 
@@ -198,6 +194,9 @@ def main():
     
     args = parser.parse_args()
     
+    # Set base seed for reproducibility of the experiment launcher itself
+    set_seed(args.base_seed, deterministic=args.deterministic)
+    
     # Create experiment directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     experiment_name = f"{args.env_name}_{args.algorithm}_{'ddqn_' if args.ddqn else ''}{'wis_' if args.weighted_is else ''}{timestamp}"
@@ -207,8 +206,7 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     
     # Generate seeds
-    base_seed = 42
-    seeds = [base_seed + i for i in range(args.seeds)]
+    seeds = [args.base_seed + i for i in range(args.seeds)]
     
     # Run experiments with different seeds
     experiment_dirs = []

@@ -14,6 +14,7 @@ from checkpointing import get_latest_checkpoint, load_training_state
 from replay_memory_fill import fill_replay_memory, warmup_memory
 from action_selection import init_exploration
 from train import train
+from seed_utils import set_seed  # Import the new seed utilities
 
 # Add this at the top to make your custom classes safe for loading with PyTorch 2.6+
 from torch.serialization import add_safe_globals
@@ -22,6 +23,9 @@ add_safe_globals(['model.DQN', 'model.DuelDQN'])
 def main():
     # Parse command line arguments
     args = parse_args()
+    
+    # Set random seed for reproducibility
+    set_seed(args.seed, deterministic=args.deterministic)
     
     # Create environment
     if args.env_name == "pong":
@@ -34,7 +38,12 @@ def main():
         env = gym.make("MsPacmanNoFrameskip-v4")
     else:
         env = gym.make("BoxingNoFrameskip-v4")
-    env = AtariWrapper(env)
+    
+    # Set the environment seed
+    env.action_space.seed(args.seed)
+    env.reset(seed=args.seed)
+    
+    env = AtariWrapper(env, seed=args.seed)
     
     n_action = env.action_space.n  # pong:6; breakout:4; boxing:18
     
@@ -69,7 +78,7 @@ def main():
     target_net.eval()
     
     # Create replay memory
-    memory = ReplayMemory(50000)
+    memory = ReplayMemory(50000, seed=args.seed)
     
     # Create optimizer
     optimizer = optim.AdamW(policy_net.parameters(), lr=args.lr, amsgrad=True)
@@ -125,7 +134,7 @@ def main():
         # Fill replay memory before resuming
         print("Filling replay memory before resuming training...")
         min_replay_size = args.min_replay_size  # Use command line arg or default to 10000
-        fill_replay_memory(env, memory, args.gpu, min_replay_size)
+        fill_replay_memory(env, memory, args.gpu, min_replay_size, seed=args.seed)
         
     else:
         print("Starting training from scratch")
@@ -133,12 +142,13 @@ def main():
         init_exploration(EPS_START, EPS_END, EPS_DECAY)
         
         # Warm up replay memory
-        warmup_memory(env, memory, args.gpu, WARMUP)
+        warmup_memory(env, memory, args.gpu, WARMUP, seed=args.seed)
     
     # Run training
     rewardList, lossList, avgrewardlist, avglosslist = train(
         env, policy_net, target_net, memory, optimizer, args, log_dir, 
-        video, start_epoch, rewardList, lossList, avgrewardlist, avglosslist
+        video, start_epoch, rewardList, lossList, avgrewardlist, avglosslist, 
+        seed=args.seed
     )
     
     # Close environment

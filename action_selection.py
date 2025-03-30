@@ -1,12 +1,15 @@
 import torch
 import random
 import math
+import numpy as np
 
 # Global variables for tracking exploration
 steps_done = 0
 eps_threshold = 1.0
+# Add random number generator as global
+rng = random.Random()
 
-def init_exploration(start_eps, end_eps, decay_steps, initial_steps=0):
+def init_exploration(start_eps, end_eps, decay_steps, initial_steps=0, seed=None):
     """
     Initialize exploration parameters
     
@@ -15,15 +18,20 @@ def init_exploration(start_eps, end_eps, decay_steps, initial_steps=0):
         end_eps: Final epsilon value
         decay_steps: Number of steps for epsilon decay
         initial_steps: Initial value for steps_done (for resuming training)
+        seed: Random seed for reproducibility
     """
-    global steps_done, eps_threshold
+    global steps_done, eps_threshold, rng
+    
+    # Set the random seed if provided
+    if seed is not None:
+        rng = random.Random(seed)
     
     steps_done = initial_steps
     eps_threshold = end_eps + (start_eps - end_eps) * math.exp(-1. * steps_done / decay_steps)
     
     return steps_done, eps_threshold
 
-def select_action(state, policy_net, env, device, eps_start=1.0, eps_end=0.05, eps_decay=50000):
+def select_action(state, policy_net, env, device, eps_start=1.0, eps_end=0.05, eps_decay=50000, seed=None):
     """
     Epsilon greedy action selection
     - epsilon: choose random action
@@ -37,6 +45,7 @@ def select_action(state, policy_net, env, device, eps_start=1.0, eps_end=0.05, e
         eps_start: Starting epsilon value
         eps_end: Final epsilon value
         eps_decay: Decay rate for epsilon
+        seed: Random seed for reproducibility
         
     Returns:
         action: Selected action shape (1,1)
@@ -44,8 +53,14 @@ def select_action(state, policy_net, env, device, eps_start=1.0, eps_end=0.05, e
     """
     global eps_threshold
     global steps_done
+    global rng
     
-    sample = random.random()
+    # Update the random seed if provided
+    if seed is not None:
+        rng = random.Random(seed)
+    
+    # Use our random number generator for reproducibility
+    sample = rng.random()
     eps_threshold = eps_end + (eps_start - eps_end) * math.exp(-1. * steps_done / eps_decay)
     steps_done += 1
 
@@ -61,8 +76,9 @@ def select_action(state, policy_net, env, device, eps_start=1.0, eps_end=0.05, e
             action_probs[best_action.item()] = 1 - eps_threshold + (eps_threshold / env.action_space.n)
             return best_action, torch.tensor([action_probs[best_action.item()]], device=device)
     else:
-        # Random action selection
-        action = torch.tensor([[env.action_space.sample()]], device=device)
+        # Random action selection - use seeded RNG
+        action_idx = rng.randint(0, env.action_space.n - 1)
+        action = torch.tensor([[action_idx]], device=device)
         # For random actions, probability is just eps_threshold / n_actions
         return action, torch.tensor([eps_threshold / env.action_space.n], device=device)
 

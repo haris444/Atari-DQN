@@ -1,7 +1,8 @@
 import torch
 from itertools import count
+import random
 
-def fill_replay_memory(env, memory, device, min_size, max_size=None):
+def fill_replay_memory(env, memory, device, min_size, max_size=None, seed=None):
     """
     Fill the replay memory with random actions up to at least min_size
     
@@ -11,19 +12,33 @@ def fill_replay_memory(env, memory, device, min_size, max_size=None):
         device: The device to use for tensors
         min_size: Minimum number of transitions to collect
         max_size: Maximum number of transitions to collect (optional)
+        seed: Random seed for reproducibility
     """
     print(f"Filling replay memory with random transitions (minimum {min_size})...")
     
+    # Create a seeded random number generator for action selection
+    rng = random.Random(seed)
+    
     steps = 0
     while len(memory) < min_size:
-        obs, info = env.reset()
+        # Reset environment with seed if provided
+        if seed is not None:
+            obs, info = env.reset(seed=seed + steps)  # Add steps to avoid same sequence
+        else:
+            obs, info = env.reset()
+            
         obs = torch.from_numpy(obs).to(device)
         obs = torch.stack((obs, obs, obs, obs)).unsqueeze(0)
         
         for step in count():
             steps += 1
-            # Take random action
-            action = torch.tensor([[env.action_space.sample()]], device=device)
+            # Take random action using seeded RNG
+            if seed is not None:
+                action_idx = rng.randint(0, env.action_space.n - 1)
+                action = torch.tensor([[action_idx]], device=device)
+            else:
+                action = torch.tensor([[env.action_space.sample()]], device=device)
+                
             next_obs, reward, terminated, truncated, info = env.step(action.item())
             done = terminated or truncated
             
@@ -53,7 +68,7 @@ def fill_replay_memory(env, memory, device, min_size, max_size=None):
     
     print(f"Finished filling replay memory with {len(memory)} transitions")
 
-def warmup_memory(env, memory, device, warmup_steps):
+def warmup_memory(env, memory, device, warmup_steps, seed=None):
     """
     Collect initial random transitions to warm up the replay memory.
     Used for the initial warmup phase before training starts.
@@ -63,18 +78,33 @@ def warmup_memory(env, memory, device, warmup_steps):
         memory: The replay memory buffer
         device: The device to use for tensors
         warmup_steps: Number of steps to collect
+        seed: Random seed for reproducibility
     """
     print("Warming up replay memory...")
+    
+    # Create a seeded random number generator for action selection
+    rng = random.Random(seed)
+    
     warmupstep = 0
     while warmupstep < warmup_steps:
-        obs, info = env.reset()
+        # Reset environment with seed if provided
+        if seed is not None:
+            obs, info = env.reset(seed=seed + warmupstep)  # Add steps to avoid same sequence
+        else:
+            obs, info = env.reset()
+            
         obs = torch.from_numpy(obs).to(device)
         obs = torch.stack((obs, obs, obs, obs)).unsqueeze(0)
 
         for step in count():
             warmupstep += 1
-            # take one step
-            action = torch.tensor([[env.action_space.sample()]]).to(device)
+            # Take random action using seeded RNG
+            if seed is not None:
+                action_idx = rng.randint(0, env.action_space.n - 1)
+                action = torch.tensor([[action_idx]], device=device)
+            else:
+                action = torch.tensor([[env.action_space.sample()]]).to(device)
+                
             next_obs, reward, terminated, truncated, info = env.step(action.item())
             done = terminated or truncated
             

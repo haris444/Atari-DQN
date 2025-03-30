@@ -31,8 +31,17 @@ Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward', 'done', 'action_prob'))
 
 class ReplayMemory:
-    def __init__(self, capacity):
+    def __init__(self, capacity, seed=None):
+        """
+        Initialize replay memory buffer
+        
+        Args:
+            capacity: Maximum capacity of the buffer
+            seed: Random seed for reproducibility
+        """
         self.memory = deque([], maxlen=capacity)
+        # Initialize with a separate random generator that can be seeded
+        self.rng = random.Random(seed)
 
     def push(self, *args):
         """Save a transition"""
@@ -40,9 +49,9 @@ class ReplayMemory:
 
     def sample(self, batch_size):
         '''
-        return List[Transition]
+        Return List[Transition] using the seeded random generator
         '''
-        return random.sample(self.memory, batch_size)
+        return self.rng.sample(self.memory, batch_size)
 
     def __len__(self):
         return len(self.memory)
