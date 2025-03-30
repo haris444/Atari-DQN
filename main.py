@@ -28,6 +28,10 @@ def main():
         env = gym.make("PongNoFrameskip-v4")
     elif args.env_name == "breakout":
         env = gym.make("BreakoutNoFrameskip-v4")
+    elif args.env_name == "spaceinvaders":
+        env = gym.make("SpaceInvadersNoFrameskip-v4")
+    elif args.env_name == "pacman":
+        env = gym.make("MsPacmanNoFrameskip-v4")
     else:
         env = gym.make("BoxingNoFrameskip-v4")
     env = AtariWrapper(env)

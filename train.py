@@ -52,9 +52,9 @@ def train(env, policy_net, target_net, memory, optimizer, args, log_dir,
     eval_data = load_evaluation_data(log_dir)
     
     # Define evaluation frequency (every N episodes)
-    eval_frequency = 10  # Evaluate every 10 episodes (for data collection)
-    video_frequency = 100  # Save video only every 100 episodes
-    eval_runs = 3  # Number of evaluation runs per evaluation point
+    eval_frequency = 50  # Evaluate every 10 episodes (for data collection)
+    video_frequency = 50  # Save video only every 100 episodes
+    eval_runs = 10  # Number of evaluation runs per evaluation point
     
     # Main training loop
     for epoch in range(start_epoch, args.epoch):

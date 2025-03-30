@@ -10,7 +10,7 @@ WARMUP = 1000  # Steps before starting updates
 def parse_args():
     """Parse command line arguments and return args object"""
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env-name', default="breakout", type=str, choices=["pong", "breakout", "boxing"], help="env name")
+    parser.add_argument('--env-name', default="breakout", type=str, choices=["pong", "breakout", "boxing","spaceinvaders","pacman"], help="env name")
     parser.add_argument('--model', default="dqn", type=str, choices=["dqn", "dueldqn"], help="dqn model")
     parser.add_argument('--gpu', default=0, type=int, help="which gpu to use")
     parser.add_argument('--algorithm', default="dqn", type=str, choices=["dqn", "expected_sarsa"], help="RL algorithm")
