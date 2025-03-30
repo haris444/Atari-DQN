@@ -1,0 +1,41 @@
+For each episode:
+    Reset environment
+    While not done:
+        # Get action from behavioral policy
+        action, prob = epsilon_greedy(state, policy_network)
+        next_state, reward, done = environment.step(action)
+        replay_buffer.add(state, action, next_state, reward, done, prob)
+        state = next_state
+        
+        batch = replay_buffer.sample()
+        
+        # Get current Q-values
+        Q_values = policy_network(states)[actions]
+        
+        target_probs = calculate_epsilon_greedy_probs(Q_values) # Calculate target policy probabilities
+        
+        weights = target_probs[actions] / behavior_probs # Calculate importance weights
+        
+        # Get next state expected values (Expected SARSA)
+        next_Q = target_network(next_states)
+        expected_Q = sum(next_Q * target_probs)
+        
+        targets = rewards + gamma * expected_Q * (1-dones)  # Calculate targets
+        
+        # Calculate TD errors 
+        errors = targets - current_Q
+        loss_per_sample = smooth_L1_loss(current_Q, targets)
+
+        
+        if weighted_importance_sampling:   # Weighted Importance sampling
+            normalized_weights = weights / sum(weights) 
+            loss = sum(loss_per_sample * normalized_weights) 
+        else: # Regular importance sampling
+            loss = mean(loss_per_sample * weights)
+        
+        # Update networks
+        update_policy_network(loss)
+    
+    # Periodically update target network
+    if episode % update_freq == 0:
+        target_network = policy_network.copy()
