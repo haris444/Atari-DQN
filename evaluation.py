@@ -65,9 +65,9 @@ def evaluate_model(policy_net, env_name, epoch, log_dir, device, video_recorder=
             evalenv = gym.make("BreakoutNoFrameskip-v4")
         elif env_name == "tennis":
             evalenv = gym.make("TennisNoFrameskip-v4")
-        elif args.env_name == "spaceinvaders":
+        elif env_name == "spaceinvaders":
             env = gym.make("SpaceInvadersNoFrameskip-v4")
-        elif args.env_name == "pacman":
+        elif env_name == "pacman":
             env = gym.make("MsPacmanNoFrameskip-v4")
         else:
             evalenv = gym.make("BoxingNoFrameskip-v4")
