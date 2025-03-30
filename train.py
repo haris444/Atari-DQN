@@ -6,7 +6,6 @@ from action_selection import select_action, get_exploration_state
 from evaluation import evaluate_model_multiple_runs, update_and_plot_evaluation_results, load_evaluation_data
 from dqn import dqn_update
 from expected_sarsa import expected_sarsa_update
-from checkpointing import save_training_state
 from utils import Transition
 from config import EPS_START, EPS_END, EPS_DECAY
 
@@ -172,14 +171,5 @@ def train(env, policy_net, target_net, memory, optimizer, args, log_dir,
             eval_data = update_and_plot_evaluation_results(
                 epoch, avg_reward, std_reward, rewards, log_dir, eval_data, live_plot=True
             )
-            
-            # Save model checkpoint during evaluation
-            if epoch % args.save_cycle == 0:
-                torch.save(policy_net, os.path.join(log_dir, f'model{epoch}.pth'))
-        
-        # Save training state periodically
-        if epoch % 10 == 0:  # Save every 10 epochs
-            save_training_state(log_dir, epoch, steps_done, eps_threshold, 
-                               rewardList, lossList, avgrewardlist, avglosslist)
     
     return rewardList, lossList, avgrewardlist, avglosslist

@@ -1,165 +1,175 @@
-import gymnasium as gym
 import torch
-from torch import optim
-import os
-import matplotlib.pyplot as plt
+from itertools import count
 from collections import deque
+import os
+from action_selection import select_action, get_exploration_state
+from evaluation import evaluate_model_multiple_runs, update_and_plot_evaluation_results, load_evaluation_data
+from dqn import dqn_update
+from expected_sarsa import expected_sarsa_update
+from utils import Transition
+from config import EPS_START, EPS_END, EPS_DECAY
 
-# Import custom modules
-from model import DQN, DuelDQN
-from utils import Transition, ReplayMemory, VideoRecorder
-from wrapper import AtariWrapper
-from config import parse_args, GAMMA, EPS_START, EPS_END, EPS_DECAY, WARMUP
-from checkpointing import get_latest_checkpoint, load_training_state
-from replay_memory_fill import fill_replay_memory, warmup_memory
-from action_selection import init_exploration
-from train import train
-
-# Add this at the top to make your custom classes safe for loading with PyTorch 2.6+
-from torch.serialization import add_safe_globals
-add_safe_globals(['model.DQN', 'model.DuelDQN'])
-
-def main():
-    # Parse command line arguments
-    args = parse_args()
+def train(env, policy_net, target_net, memory, optimizer, args, log_dir, 
+          video_recorder, start_epoch=0, rewardList=None, lossList=None,
+          avgrewardlist=None, avglosslist=None):
+    """
+    Main training loop for the agent
     
-    # Create environment
-    if args.env_name == "pong":
-        env = gym.make("PongNoFrameskip-v4")
-    elif args.env_name == "breakout":
-        env = gym.make("BreakoutNoFrameskip-v4")
-    elif args.env_name == "spaceinvaders":
-        env = gym.make("SpaceInvadersNoFrameskip-v4")
-    elif args.env_name == "pacman":
-        env = gym.make("MsPacmanNoFrameskip-v4")
-    else:
-        env = gym.make("BoxingNoFrameskip-v4")
-    env = AtariWrapper(env)
+    Args:
+        env: The environment to train on
+        policy_net: The policy network
+        target_net: The target network
+        memory: Replay memory buffer
+        optimizer: Optimizer for the policy network
+        args: Command line arguments
+        log_dir: Directory to save logs and checkpoints
+        video_recorder: VideoRecorder object for evaluation
+        start_epoch: Starting epoch number (for resuming training)
+        rewardList: List of rewards for each epoch (for resuming training)
+        lossList: List of losses for each epoch (for resuming training)
+        avgrewardlist: List of average rewards (for resuming training)
+        avglosslist: List of average losses (for resuming training)
+    """
+    # Initialize lists for tracking performance if not provided
+    if rewardList is None:
+        rewardList = []
+    if lossList is None:
+        lossList = []
+    if avgrewardlist is None:
+        avgrewardlist = []
+    if avglosslist is None:
+        avglosslist = []
+        
+    # Initialize deques for computing rolling averages
+    rewarddeq = deque(rewardList[-100:] if len(rewardList) >= 100 else rewardList, maxlen=100)
+    lossdeq = deque(lossList[-100:] if len(lossList) >= 100 else lossList, maxlen=100)
     
-    n_action = env.action_space.n  # pong:6; breakout:4; boxing:18
+    # Path for logging
+    log_path = os.path.join(log_dir, "log.txt")
     
-    # Create directory for logs and checkpoints
-    if args.ddqn:
-        methodname = f"double_{args.model}"
-    else:
-        methodname = args.model
+    # Load existing evaluation data if available
+    eval_data = load_evaluation_data(log_dir)
     
-    # Use custom log directory if provided
-    if args.log_dir:
-        log_dir = args.log_dir
-    else:
-        log_dir = os.path.join(f"log_{args.env_name}", methodname)
+    # Define evaluation frequency (every N episodes)
+    eval_frequency = 50  # Evaluate every 10 episodes (for data collection)
+    video_frequency = 50  # Save video only every 100 episodes
+    eval_runs = 10  # Number of evaluation runs per evaluation point
     
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-    
-    # Create video recorder
-    video = VideoRecorder(log_dir)
-    
-    # Create networks
-    if args.model == "dqn":
-        policy_net = DQN(in_channels=4, n_actions=n_action).to(args.gpu)
-        target_net = DQN(in_channels=4, n_actions=n_action).to(args.gpu)
-    else:
-        policy_net = DuelDQN(in_channels=4, n_actions=n_action).to(args.gpu)
-        target_net = DuelDQN(in_channels=4, n_actions=n_action).to(args.gpu)
-    
-    # Initialize target network
-    target_net.load_state_dict(policy_net.state_dict())
-    target_net.eval()
-    
-    # Create replay memory
-    memory = ReplayMemory(50000)
-    
-    # Create optimizer
-    optimizer = optim.AdamW(policy_net.parameters(), lr=args.lr, amsgrad=True)
-    
-    # Check for existing checkpoints and load if available
-    latest_model_path, checkpoint_epoch = get_latest_checkpoint(log_dir)
-    training_state = load_training_state(log_dir)
-    
-    # Initialize lists and variables
-    rewardList = []
-    lossList = []
-    avgrewardlist = []
-    avglosslist = []
-    start_epoch = 0
-    
-    if latest_model_path and training_state:
-        print(f"Resuming from checkpoint: {latest_model_path} (Epoch {checkpoint_epoch})")
-        # Load model
-        device = f"cuda:{args.gpu}" if isinstance(args.gpu, int) else "cpu"
-        try:
-            # First try loading with weights_only=False (which was the default before PyTorch 2.6)
-            loaded_model = torch.load(latest_model_path, map_location=device, weights_only=False)
-            print("Successfully loaded checkpoint")
-            policy_net = loaded_model
-        except Exception as e:
-            # If that fails, try to recreate the model architecture and load state_dict
-            if args.model == "dqn":
-                loaded_model = DQN(in_channels=4, n_actions=n_action).to(device)
-            else:
-                loaded_model = DuelDQN(in_channels=4, n_actions=n_action).to(device)
+    # Main training loop
+    for epoch in range(start_epoch, args.epoch):
+        obs, info = env.reset()
+        obs = torch.from_numpy(obs).to(args.gpu)
+        obs = torch.stack((obs, obs, obs, obs)).unsqueeze(0)
+        
+        total_loss = 0.0
+        total_reward = 0
+        
+        # Episode loop
+        for step in count():
+            # Select action using epsilon-greedy
+            action, action_prob = select_action(obs, policy_net, env, args.gpu, EPS_START, EPS_END, EPS_DECAY)
             
-            # Load just the state dictionary
-            state_dict = torch.load(latest_model_path, map_location=device, weights_only=True)
-            loaded_model.load_state_dict(state_dict)
-            policy_net.load_state_dict(loaded_model.state_dict())
+            # Take a step in the environment
+            next_obs, reward, terminated, truncated, info = env.step(action.item())
+            total_reward += reward
+            done = terminated or truncated
             
-        target_net.load_state_dict(policy_net.state_dict())
-        
-        # Restore training state
-        start_epoch = training_state['epoch'] + 1
-        steps_done = training_state['steps_done']
-        eps_threshold = training_state['eps_threshold']
-        rewardList = training_state['rewardList']
-        lossList = training_state['lossList']
-        avgrewardlist = training_state['avgrewardlist']
-        avglosslist = training_state['avglosslist']
-        
-        # Initialize exploration parameters
-        init_exploration(EPS_START, EPS_END, EPS_DECAY, steps_done)
-        
-        print(f"Resuming training from epoch {start_epoch}, with {steps_done} total steps")
-        
-        # Fill replay memory before resuming
-        print("Filling replay memory before resuming training...")
-        min_replay_size = args.min_replay_size  # Use command line arg or default to 10000
-        fill_replay_memory(env, memory, args.gpu, min_replay_size)
-        
-    else:
-        print("Starting training from scratch")
-        # Initialize exploration parameters
-        init_exploration(EPS_START, EPS_END, EPS_DECAY)
-        
-        # Warm up replay memory
-        warmup_memory(env, memory, args.gpu, WARMUP)
-    
-    # Run training
-    rewardList, lossList, avgrewardlist, avglosslist = train(
-        env, policy_net, target_net, memory, optimizer, args, log_dir, 
-        video, start_epoch, rewardList, lossList, avgrewardlist, avglosslist
-    )
-    
-    # Close environment
-    env.close()
-    
-    # Plot training results
-    plt.figure(1)
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.plot(range(len(lossList)), lossList, label="loss")
-    plt.plot(range(len(lossList)), avglosslist, label="avg")
-    plt.legend()
-    plt.savefig(os.path.join(log_dir, "loss.png"))
-    
-    plt.figure(2)
-    plt.xlabel("Epoch")
-    plt.ylabel("Reward")
-    plt.plot(range(len(rewardList)), rewardList, label="reward")
-    plt.plot(range(len(rewardList)), avgrewardlist, label="avg")
-    plt.legend()
-    plt.savefig(os.path.join(log_dir, "reward.png"))
+            # Convert to tensors
+            reward = torch.tensor([reward], device=args.gpu)
+            done = torch.tensor([done], device=args.gpu)
+            next_obs = torch.from_numpy(next_obs).to(args.gpu)
+            next_obs = torch.stack((next_obs, obs[0][0], obs[0][1], obs[0][2])).unsqueeze(0)
+            
+            # Store the transition in memory
+            memory.push(obs, action, next_obs, reward, done, action_prob)
+            
+            # Move to next state
+            obs = next_obs
+            
+            # Train the network
+            policy_net.train()
+            transitions = memory.sample(args.batch_size)
+            batch = Transition(*zip(*transitions))
+            
+            # Update based on selected algorithm
+            if args.algorithm == "dqn":
+                loss = dqn_update(batch, policy_net, target_net, 
+                                  gamma=0.99, ddqn=args.ddqn, device=args.gpu)
+            else:  # expected_sarsa
+                # Get current exploration state for action probabilities
+                _, eps_threshold = get_exploration_state()
+                
+                loss = expected_sarsa_update(
+                    batch, policy_net, target_net, env, eps_threshold,
+                    gamma=0.99, weighted=args.weighted_is,
+                    clip_weights=args.clip_weights, max_weight=args.max_weight,
+                    device=args.gpu
+                )
+            
+            # Track loss
+            total_loss += loss.item()
+            
+            # Optimize the network
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            # End episode when done
+            if done:
+                break
 
-if __name__ == "__main__":
-    main()
+        # Update target network periodically
+        steps_done, _ = get_exploration_state()
+        if epoch % args.target_update_episodes == 0:
+            target_net.load_state_dict(policy_net.state_dict())
+        
+        # Track performance
+        rewardList.append(total_reward)
+        lossList.append(total_loss)
+        rewarddeq.append(total_reward)
+        lossdeq.append(total_loss)
+        
+        # Calculate rolling averages
+        avgreward = sum(rewarddeq) / len(rewarddeq)
+        avgloss = sum(lossdeq) / len(lossdeq)
+        avglosslist.append(avgloss)
+        avgrewardlist.append(avgreward)
+        
+        # Get current exploration parameters
+        steps_done, eps_threshold = get_exploration_state()
+        
+        # Log progress
+        output = f"Epoch {epoch}: Loss {total_loss:.2f}, Reward {total_reward}, Avgloss {avgloss:.2f}, Avgreward {avgreward:.2f}, Epsilon {eps_threshold:.2f}, TotalStep {steps_done}"
+        print(output)
+        with open(log_path, "a") as f:
+            f.write(f"{output}\n")
+        
+        # Create video directory if it doesn't exist
+        video_dir = os.path.join(log_dir, "videos")
+        if not os.path.exists(video_dir):
+            os.makedirs(video_dir)
+            
+        # Run multiple evaluations and save data every eval_frequency episodes
+        if epoch % eval_frequency == 0:
+            # Determine if we should record video this epoch
+            should_record_video = (epoch % video_frequency == 0)
+            
+            # Set up video recorder if needed
+            current_video_recorder = None
+            if should_record_video:
+                # Create custom video recorder that saves to video subdirectory
+                video_recorder.dir_name = video_dir
+                current_video_recorder = video_recorder
+            
+            # Perform multiple evaluation runs
+            avg_reward, std_reward, rewards = evaluate_model_multiple_runs(
+                policy_net, args.env_name, epoch, log_dir, args.gpu, 
+                num_runs=eval_runs, video_recorder=current_video_recorder
+            )
+            
+            # Update evaluation data and plot results
+            eval_data = update_and_plot_evaluation_results(
+                epoch, avg_reward, std_reward, rewards, log_dir, eval_data, live_plot=True
+            )
+    
+    return rewardList, lossList, avgrewardlist, avglosslist

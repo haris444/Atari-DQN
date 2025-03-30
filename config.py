@@ -21,10 +21,9 @@ def parse_args():
     parser.add_argument('--target-update-episodes', default=10, type=int, help="Update target network every X episodes")
     parser.add_argument('--ddqn', action='store_true', help="double dqn/dueldqn")
     parser.add_argument('--eval-cycle', default=500, type=int, help="evaluation cycle")
-    parser.add_argument('--save-cycle', default=10, type=int, help="save model every X evaluations")
     parser.add_argument('--min-replay-size', default=10000, type=int, help="Minimum replay memory size before training")
     parser.add_argument('--clip-weights', action='store_true', help="Clip importance sampling weights")
     parser.add_argument('--max-weight', default=10.0, type=float, help="Maximum importance sampling weight when clipping")
-    parser.add_argument('--log-dir', type=str, help="Directory to save logs and checkpoints (overrides default)")
+    parser.add_argument('--log-dir', type=str, help="Directory to save logs")
     
     return parser.parse_args()
