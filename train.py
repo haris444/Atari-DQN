@@ -52,14 +52,14 @@ def train(env, policy_net, target_net, memory, optimizer, args, log_dir,
     # Load existing evaluation data if available
     eval_data = load_evaluation_data(log_dir)
     
-    # Define evaluation frequency (every N episodes)
-    eval_frequency = 50  # Evaluate every 10 episodes (for data collection)
-    video_frequency = 50  # Save video only every 100 episodes
-    eval_runs = 10  # Number of evaluation runs per evaluation point
+    # Define evaluation frequency, rec frequency and how many eval runs
+    eval_frequency = 50  
+    video_frequency = 50  
+    eval_runs = 10  
     
     # Main training loop
     for epoch in range(start_epoch, args.epoch):
-        # Reset environment with seed if provided (add epoch to avoid same sequence)
+        
         if seed is not None:
             episode_seed = seed + epoch
             obs, info = env.reset(seed=episode_seed)
@@ -74,29 +74,28 @@ def train(env, policy_net, target_net, memory, optimizer, args, log_dir,
         
         # Episode loop
         for step in count():
-            # Select action using epsilon-greedy with seed
+            # e greedy
             action, action_prob = select_action(obs, policy_net, env, args.gpu, 
                                                EPS_START, EPS_END, EPS_DECAY, 
                                                seed=(seed + epoch + step if seed is not None else None))
             
-            # Take a step in the environment
+            # step
             next_obs, reward, terminated, truncated, info = env.step(action.item())
             total_reward += reward
             done = terminated or truncated
             
-            # Convert to tensors
+            
             reward = torch.tensor([reward], device=args.gpu)
             done = torch.tensor([done], device=args.gpu)
             next_obs = torch.from_numpy(next_obs).to(args.gpu)
             next_obs = torch.stack((next_obs, obs[0][0], obs[0][1], obs[0][2])).unsqueeze(0)
             
-            # Store the transition in memory
+            # Store  transition in memory
             memory.push(obs, action, next_obs, reward, done, action_prob)
             
-            # Move to next state
             obs = next_obs
             
-            # Train the network
+            # train the network
             policy_net.train()
             transitions = memory.sample(args.batch_size)
             batch = Transition(*zip(*transitions))
@@ -116,7 +115,6 @@ def train(env, policy_net, target_net, memory, optimizer, args, log_dir,
                     device=args.gpu
                 )
             
-            # Track loss
             total_loss += loss.item()
             
             # Optimize the network
@@ -139,7 +137,7 @@ def train(env, policy_net, target_net, memory, optimizer, args, log_dir,
         rewarddeq.append(total_reward)
         lossdeq.append(total_loss)
         
-        # Calculate rolling averages
+
         avgreward = sum(rewarddeq) / len(rewarddeq)
         avgloss = sum(lossdeq) / len(lossdeq)
         avglosslist.append(avgloss)

@@ -19,7 +19,6 @@ def save_training_state(log_dir, epoch, steps_done, eps_threshold,
         'avglosslist': avglosslist
     }
     
-    # Save to a JSON file
     state_path = os.path.join(log_dir, 'training_state.json')
     with open(state_path, 'w') as f:
         json.dump(training_state, f)
@@ -47,7 +46,6 @@ def get_latest_checkpoint(log_dir):
     if not model_files:
         return None, 0
     
-    # Extract epoch numbers from filenames
     epoch_numbers = []
     for file in model_files:
         match = re.search(r'model(\d+)\.pth', file)

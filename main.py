@@ -16,7 +16,6 @@ from action_selection import init_exploration
 from train import train
 from seed_utils import set_seed  # Import the new seed utilities
 
-# Add this at the top to make your custom classes safe for loading with PyTorch 2.6+
 from torch.serialization import add_safe_globals
 add_safe_globals(['model.DQN', 'model.DuelDQN'])
 
@@ -45,7 +44,7 @@ def main():
     
     env = AtariWrapper(env, seed=args.seed)
     
-    n_action = env.action_space.n  # pong:6; breakout:4; boxing:18
+    n_action = env.action_space.n 
     
     # Create directory for logs and checkpoints
     if args.ddqn:
@@ -83,7 +82,7 @@ def main():
     # Create optimizer
     optimizer = optim.AdamW(policy_net.parameters(), lr=args.lr, amsgrad=True)
     
-    # Check for existing checkpoints and load if available
+    # Check for existing checkpoints and load if available (for resuming training on long trains)
     latest_model_path, checkpoint_epoch = get_latest_checkpoint(log_dir)
     training_state = load_training_state(log_dir)
     
@@ -94,12 +93,13 @@ def main():
     avglosslist = []
     start_epoch = 0
     
+    # resuming from checkpoint (previous train interupted) if available
     if latest_model_path and training_state:
         print(f"Resuming from checkpoint: {latest_model_path} (Epoch {checkpoint_epoch})")
         # Load model
         device = f"cuda:{args.gpu}" if isinstance(args.gpu, int) else "cpu"
         try:
-            # First try loading with weights_only=False (which was the default before PyTorch 2.6)
+            # First try loading with weights_only=False
             loaded_model = torch.load(latest_model_path, map_location=device, weights_only=False)
             print("Successfully loaded checkpoint")
             policy_net = loaded_model
@@ -133,7 +133,7 @@ def main():
         
         # Fill replay memory before resuming
         print("Filling replay memory before resuming training...")
-        min_replay_size = args.min_replay_size  # Use command line arg or default to 10000
+        min_replay_size = args.min_replay_size 
         fill_replay_memory(env, memory, args.gpu, min_replay_size, seed=args.seed)
         
     else:

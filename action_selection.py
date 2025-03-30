@@ -55,16 +55,14 @@ def select_action(state, policy_net, env, device, eps_start=1.0, eps_end=0.05, e
     global steps_done
     global rng
     
-    # Update the random seed if provided
+    # update the seed
     if seed is not None:
         rng = random.Random(seed)
     
-    # Use our random number generator for reproducibility
     sample = rng.random()
     eps_threshold = eps_end + (eps_start - eps_end) * math.exp(-1. * steps_done / eps_decay)
     steps_done += 1
 
-    # Calculate action probabilities (epsilon-greedy)
     action_probs = torch.ones(env.action_space.n, device=device) * eps_threshold / env.action_space.n
     
     if sample > eps_threshold:
@@ -72,17 +70,16 @@ def select_action(state, policy_net, env, device, eps_start=1.0, eps_end=0.05, e
         with torch.no_grad():
             q_values = policy_net(state)
             best_action = q_values.max(1)[1].view(1, 1)
-            # Update probability for the selected action
+            #update probability for the selected action
             action_probs[best_action.item()] = 1 - eps_threshold + (eps_threshold / env.action_space.n)
             return best_action, torch.tensor([action_probs[best_action.item()]], device=device)
     else:
-        # Random action selection - use seeded RNG
+        #random action selection
         action_idx = rng.randint(0, env.action_space.n - 1)
         action = torch.tensor([[action_idx]], device=device)
-        # For random actions, probability is just eps_threshold / n_actions
+        #for random actions, probability is just eps_threshold / n_actions
         return action, torch.tensor([eps_threshold / env.action_space.n], device=device)
 
 def get_exploration_state():
-    """Get the current state of exploration parameters"""
     global steps_done, eps_threshold
     return steps_done, eps_threshold
